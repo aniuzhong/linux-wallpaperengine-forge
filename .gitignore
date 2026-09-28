@@ -4,10 +4,10 @@ out/
 # ---- User-space toolchains (Go / Bun / Rust / CMake / GOPATH, fetched by ensure_*) ----
 toolchains/
 
-# ---- Source checkouts (upstream repos pinned to specific versions, with their own .git/.gitmodules and CEF cache) ----
-src/linux-wallpaperengine
-src/linux-wallpaperengine-gui
-src/steamworks.js
+# ---- Upstream checkouts in third_party/ (pinned to specific versions, with their own .git/.gitmodules and CEF cache) ----
+third_party/linux-wallpaperengine
+third_party/linux-wallpaperengine-gui
+third_party/steamworks.js
 
 # ---- Dependencies and intermediate build artifacts (catch-all to keep nested repos from leaking into the main repo) ----
 node_modules/

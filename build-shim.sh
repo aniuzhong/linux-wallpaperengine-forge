@@ -17,7 +17,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./lib.sh
 
 init_log shim
-SHIM_SRC="$SOURCES/peony-qt-desktop"
+SHIM_SRC="$SRC_DIR/peony-qt-desktop"
 SHIM_BUILD="$SHIM_SRC/build"
 PAYLOAD="$OUTPUT/integration"
 

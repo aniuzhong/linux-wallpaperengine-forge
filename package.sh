@@ -18,7 +18,7 @@ init_log package
 GUI_PAYLOAD="$OUTPUT/linux-unpacked"
 ENG_PAYLOAD="$OUTPUT/engine"
 SHIM_SO="$OUTPUT/integration/libpeony-alpha.so"
-GUI_SRC="$SOURCES/linux-wallpaperengine-gui"
+GUI_SRC="$THIRD_PARTY/linux-wallpaperengine-gui"
 
 # ---- 1. 前置校验 ----
 [ -d "$GUI_PAYLOAD" ] || die "out/linux-unpacked does not exist, please run build-gui.sh first"

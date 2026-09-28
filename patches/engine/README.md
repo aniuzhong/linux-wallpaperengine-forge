@@ -5,7 +5,7 @@
 注释 —— 含义与缘由统一放在本文件, 补丁内容变更时请同步更新对应条目。
 
 换 `ENGINE_REF` 时补丁可能因上下文变化套用失败 (显性报错): 用
-`git -C src/linux-wallpaperengine diff` 查看当前差异, 对照下方说明把
+`git -C third_party/linux-wallpaperengine diff` 查看当前差异, 对照下方说明把
 上游改动合并进对应补丁。
 
 ## 逻辑补丁清单

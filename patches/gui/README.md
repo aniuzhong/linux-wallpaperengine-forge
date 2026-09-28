@@ -5,7 +5,7 @@
 注释 —— 含义与缘由统一放在本文件, 补丁内容变更时请同步更新对应条目。
 
 换 `GUI_REF` 时补丁可能因上下文变化套用失败 (显性报错): 用
-`git -C src/linux-wallpaperengine-gui diff` 查看当前差异, 对照下方说明
+`git -C third_party/linux-wallpaperengine-gui diff` 查看当前差异, 对照下方说明
 把上游改动合并进对应补丁。
 
 注意: `src/backend/go.mod` 的 pkg/peony 接线**不属于任何补丁** —— 它由
@@ -14,13 +14,17 @@ build-gui.sh 的 `go mod edit` 在每次构建时现场注入 (apply_patches 每
 
 ## 逻辑补丁清单
 
-### 001 — Workshop 移入 utilityProcess
+### 001 — Workshop 移入 utilityProcess (仅 vite 接线)
 
-Valve 的 breakpad 崩溃钩子只应存在于独立进程。新增
-`steamworksWorker.ts`: steamworks.js 运行在 Electron utilityProcess
-worker 里, 经一套 JSON RPC 协议 (`init`/`call` → `ready`/`result`) 与主
-进程通信, 工坊代码无论怎么崩都不波及 UI, 父进程按需重启并优雅降级;
-`workshopService.ts` 改造为经 worker 代理, `vite.config.ts` 随动。
+Valve 的 breakpad 崩溃钩子只应存在于独立进程。本补丁只剩
+`vite.config.ts` 一处: main 入口扩为 `[main.ts, steamworksWorker.ts]`
+双入口。实现全部在 forge 自有源码 `src/gui-workshop/`
+(`steamworksWorker.ts` worker 进程 + `workshopService.ts` 覆盖上游,
+经 JSON RPC `init`/`call` → `ready`/`result` 通信, 工坊崩溃不波及 UI,
+worker 死亡时优雅降级), 由 build-gui.sh 构建期覆盖安装, 上游演进经
+`UPSTREAM_BASE` hash 告警。历史教训: 早期版本以 700+ 行补丁形态携带
+全部逻辑, 手工改 diff 产生过 7 个静默缺陷 (未定义类名/常量/方法),
+esbuild 不做类型检查全部放行 —— 这正是该逻辑迁出自补丁的原因。
 
 ### 002 — 桌面透明注入接线
 

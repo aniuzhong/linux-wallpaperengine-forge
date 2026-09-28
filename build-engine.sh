@@ -2,7 +2,8 @@
 #
 # build-engine.sh — 编译 linux-wallpaperengine 引擎本体
 #
-# 源码:   上游克隆钉在 ENGINE_REF, 构建前套用 patches/engine/ 全系列补丁
+# 源码:   上游克隆钉在 ENGINE_REF (third_party/), 构建前套用
+#         patches/engine/ 全系列补丁
 # 产物:   out/engine/ (扁平 payload: 安装前缀即载荷根, 引擎二进制与 CEF
 #         运行时同级, 随套件整体分发)
 # 日志:   out/build-engine.log
@@ -17,7 +18,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./lib.sh
 
 init_log engine
-ENGINE_SRC="$SOURCES/linux-wallpaperengine"
+ENGINE_SRC="$THIRD_PARTY/linux-wallpaperengine"
 
 # ---- 1. 系统依赖探测 ----
 # 清单即引擎在麒麟 V10 SP1 上的全部构建依赖; 只探测并给出安装命令, 不代装。

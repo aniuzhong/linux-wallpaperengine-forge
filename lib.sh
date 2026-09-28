@@ -2,12 +2,15 @@
 #
 # 被 build-*.sh source，不直接执行。
 #
-# 布局约定:
-#   toolchains/  用户态工具链 (go / bun / rust / cmake) 与大文件缓存 (cef)
-#   src/         源码克隆 (钉住版本，含构建缓存) 与自研源码
-#                (src/peony-qt-desktop)
-#   pkg/         forge 自有 Go 模块 (pkg/peony，由 build-gui.sh 接入)
-#   out/         产物与日志 (build-<目标>.log)
+# 布局约定 (按所有权划分):
+#   src/           forge 自有源码 (TS: gui-workshop; C++: peony-qt-desktop)
+#   pkg/           forge 自有 Go 模块 (peony, 经 go.mod replace 接入)
+#   third_party/   上游克隆 (钉住版本, 含各自构建缓存; 勿直接修改,
+#                  ensure_repo 会 checkout -f 冲掉)
+#   toolchains/    用户态工具链 (go / bun / rust / cmake) 与大文件缓存 (cef)
+#   patches/       forge 对 third_party 克隆的差异补丁 (条目说明见
+#                  patches/*/README.md)
+#   out/           产物与日志 (build-<目标>.log)
 
 # ---- 版本钉 (环境变量可覆盖) ----
 GUI_REF="${GUI_REF:-8855fad673932991dde0241530941a520b0e34a2}"
@@ -16,8 +19,9 @@ BUN_VERSION="${BUN_VERSION:-1.4.2}"
 CMAKE_VERSION="${CMAKE_VERSION:-4.4.3}"
 
 FORGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DIR="$FORGE_DIR/src"
+THIRD_PARTY="$FORGE_DIR/third_party"
 TOOLCHAINS="$FORGE_DIR/toolchains"
-SOURCES="$FORGE_DIR/src"
 OUTPUT="$FORGE_DIR/out"
 
 # ---- 镜像 ----

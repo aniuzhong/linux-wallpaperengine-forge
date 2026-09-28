@@ -2,9 +2,10 @@
 #
 # build-gui.sh — 编译 linux-wallpaperengine-gui (Electron 前端 + Go 后端)
 #
-# 源码:   上游克隆钉在 GUI_REF, 构建前套用 patches/gui/ 全系列补丁;
-#         forge 自有模块 pkg/peony (桌面透明注入) 由 go mod edit 现场
-#         接入, 不进补丁
+# 源码:   上游克隆钉在 GUI_REF (third_party/), 构建前套用 patches/gui/
+#         全系列补丁; forge 自有模块不进补丁: pkg/peony (桌面透明注入,
+#         Go) 由 go mod edit 现场接入; src/gui-workshop (Workshop 隔离,
+#         TS) 整体覆盖到源码树对应路径, 上游演进经 UPSTREAM_BASE hash 告警
 # 产物:   out/linux-unpacked/ (electron-builder --dir, 目录形态)
 # 日志:   out/build-gui.log
 #
@@ -18,7 +19,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./lib.sh
 
 init_log gui
-GUI_SRC="$SOURCES/linux-wallpaperengine-gui"
+GUI_SRC="$THIRD_PARTY/linux-wallpaperengine-gui"
 
 # ---- 1. 系统依赖探测 ----
 # GTK 与 libayatana 是托盘/通知的链接期依赖
@@ -34,9 +35,31 @@ check_lib gtk+-3.0 libgtk-3-dev
 check_lib ayatana-appindicator3-0.1 libayatana-appindicator3-dev
 probe_report
 
-# ---- 2. 源码 + 补丁 ----
+# ---- 2. 源码 + 补丁 + forge overlay ----
 ensure_repo "https://github.com/AzPepoze/linux-wallpaperengine-gui" "$GUI_SRC" "$GUI_REF"
 apply_patches "$GUI_SRC" "$FORGE_DIR/patches/gui"
+
+# src/gui-workshop: forge 自有前端源码, 覆盖安装到源码树 (逻辑进自有
+# 源码, 补丁只留 vite 接线 — 与 Go 侧 pkg/peony 同一教义)。每次构建
+# 无条件覆盖, 端状态确定。
+OVERLAY_DIR="$SRC_DIR/gui-workshop"
+for f in "$OVERLAY_DIR"/*.ts; do
+	name=$(basename "$f")
+	cp -f "$f" "$GUI_SRC/src/frontend/main/services/$name"
+	log "Overlay: src/frontend/main/services/$name <- src/gui-workshop/"
+done
+# 上游演进告警: overlay 覆盖上游同路径文件会遮蔽上游改动, UPSTREAM_BASE
+# 记录 overlay 所基于的上游 blob hash, 不一致即显性提醒对照合并
+while read -r hash path; do
+	case "$hash" in \#*|"") continue ;; esac
+	[ -n "$path" ] || continue
+	cur=$(git -C "$GUI_SRC" rev-parse "HEAD:$path" 2>/dev/null || echo "")
+	if [ -n "$cur" ] && [ "$cur" != "$hash" ]; then
+		warn "Upstream file evolved since overlay was authored: $path"
+		warn "  overlay base: $hash / pinned HEAD: $cur"
+		warn "  review and merge upstream changes into src/gui-workshop/"
+	fi
+done < "$OVERLAY_DIR/UPSTREAM_BASE"
 
 # ---- 3. 工具链 ----
 # Go 版本取自后端 go.mod, 与上游声明保持一致; bun/rust 落用户态 toolchains/
@@ -49,7 +72,7 @@ ensure_rust
 # ---- 4. steamworks 原生模块 ----
 # Workshop 功能依赖 steamworks.js; npm 预编译产物对麒麟不可用, 本地重编
 # 后连同 Steam SDK 的 libsteam_api.so 一起覆盖进前端依赖
-SWJS_SRC="$SOURCES/steamworks.js"
+SWJS_SRC="$THIRD_PARTY/steamworks.js"
 if [ ! -d "$SWJS_SRC/.git" ]; then
 	log "Cloning steamworks.js ..."
 	git clone https://github.com/ceifa/steamworks.js "$SWJS_SRC"
@@ -92,7 +115,11 @@ log "Wiring pkg/peony module into GUI go.mod ..."
 	-replace="lwe-forge/pkg/peony=$FORGE_DIR/pkg/peony")
 
 # ---- 7. 构建 ----
-# 流水线: Go 后端 (CGO) -> vite 前端 -> electron-builder --dir
+# 流水线: tsc 类型门禁 -> Go 后端 (CGO) -> vite 前端 -> electron-builder --dir
+# esbuild/vite 不做类型检查, 未定义标识符等错误 (曾致 GUI 窗口无法创建)
+# 必须由 tsc 在构建期拦截
+log "Type-checking frontend (tsc --noEmit) ..."
+(cd "$GUI_SRC" && ./node_modules/.bin/tsc --noEmit)
 log "Building GUI (bun run build) ..."
 (cd "$GUI_SRC" && bun run build)
 
