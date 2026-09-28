@@ -1,0 +1,722 @@
+diff --git a/src/frontend/main/services/steamworksWorker.ts b/src/frontend/main/services/steamworksWorker.ts
+new file mode 100644
+index 0000000..3874e99
+--- /dev/null
++++ b/src/frontend/main/services/steamworksWorker.ts
+@@ -0,0 +1,164 @@
++// steamworksWorker.ts — utilityProcess worker isolating steamworks.
++//
++// Runs inside an Electron utilityProcess: Valve's breakpad crash hooks live
++// only here, isolated from Chromium's process/fd management. Whatever happens
++// to this process, the UI process stays unaffected; the parent restarts this
++// worker on demand and degrades gracefully.
++//
++// Protocol:
++//   parent -> worker: { type: "init", appId }
++//                     { type: "call", id, method, params }
++//   worker -> parent:  { type: "ready" } | { type: "initError", error }
++//                     { type: "result", id, result } | { type: "result", id, error }
++
++import { init } from "steamworks.js";
++
++let client: any = null;
++const parentPort: any = (process as any).parentPort;
++
++const methods: Record<string, (params: any) => any> = {
++	async getItems({ ids, opts }: any) {
++		return client.workshop.getItems(
++			ids.map((id: string) => BigInt(id)),
++			opts,
++		);
++	},
++
++	// Workshop search: upstream retries multiple queryType/itemType
++	// combinations and merges pages; the whole loop lives here so the parent
++	// needs a single RPC call.
++	async searchAllItems(p: any) {
++		const { startingSteamPage, queryTypesToTry, itemTypesToTry, appId, queryConfig, steamPagesPerFrontendPage, requestedPageSize, requestedQueryType, requestedItemType } = p;
++
++		let totalResults = 0;
++		const allMergedItems: any[] = [];
++		let bestQT = requestedQueryType;
++		let bestIT = requestedItemType;
++		let typesFound = false;
++
++		for (const qt of queryTypesToTry) {
++			for (const it of itemTypesToTry) {
++				try {
++					const res = await client.workshop.getAllItems(
++						startingSteamPage, qt, it, appId, appId, queryConfig,
++					);
++					if ((res?.items || []).length > 0 || (res?.totalResults || 0) > 0) {
++						bestQT = qt;
++						bestIT = it;
++						typesFound = true;
++						totalResults = res?.totalResults || 0;
++						allMergedItems.push(...(res?.items || []).filter((i: any) => i));
++						break;
++					}
++				} catch (e: any) {
++					console.error(`[sw-worker] getAllItems failed (queryType=${qt}, itemType=${it}):`, e?.message ?? e);
++				}
++			}
++			if (typesFound) break;
++		}
++
++		if (typesFound && steamPagesPerFrontendPage > 1) {
++			for (let i = 1; i < steamPagesPerFrontendPage; i++) {
++				const currentSteamPage = startingSteamPage + i;
++				if (allMergedItems.length >= totalResults && totalResults > 0) break;
++				try {
++					const res = await client.workshop.getAllItems(
++						currentSteamPage, bestQT, bestIT, appId, appId, queryConfig,
++					);
++					if (res?.items) {
++						allMergedItems.push(...res.items.filter((i: any) => i));
++					}
++				} catch (e: any) {
++					console.error(`[sw-worker] page fetch failed (steam page ${currentSteamPage}):`, e?.message ?? e);
++				}
++			}
++		}
++
++		if (allMergedItems.length > requestedPageSize) {
++			allMergedItems.length = requestedPageSize;
++		}
++		return { items: allMergedItems, totalResults };
++	},
++
++	async getItem({ id, opts }: any) {
++		return client.workshop.getItem(BigInt(id), opts);
++	},
++
++	async subscribe({ id }: any) {
++		await client.workshop.subscribe(BigInt(id));
++		return { success: true };
++	},
++
++	async unsubscribe({ id }: any) {
++		await client.workshop.unsubscribe(BigInt(id));
++		return { success: true };
++	},
++
++	getSubscribedItems() {
++		return client.workshop.getSubscribedItems();
++	},
++
++	getDownloadingItems() {
++		const subscribedItems = client.workshop.getSubscribedItems();
++		const downloadingItems: any[] = [];
++		for (const fileId of subscribedItems) {
++			const state = client.workshop.state(fileId);
++			// 16 = Downloading, 32 = Download Pending
++			if ((state & 16) || (state & 32)) {
++				const info = client.workshop.downloadInfo(fileId);
++				if (info) {
++					downloadingItems.push({
++						fileId: fileId.toString(),
++						current: info.current.toString(),
++						total: info.total.toString(),
++						state,
++					});
++				}
++			}
++		}
++		return downloadingItems;
++	},
++
++	getDownloadInfo({ id }: any) {
++		const info = client.workshop.downloadInfo(BigInt(id));
++		return info ? { current: String(info.current), total: String(info.total) } : null;
++	},
++
++	getInstallInfo({ id }: any) {
++		const info = client.workshop.installInfo(BigInt(id));
++		return info ? { ...info, sizeOnDisk: String(info.sizeOnDisk) } : null;
++	},
++};
++
++parentPort.on("message", async (event: any) => {
++	const msg = event?.data ?? event;
++
++	if (msg?.type === "init") {
++		try {
++			client = init(msg.appId);
++			parentPort.postMessage({ type: "ready" });
++		} catch (err: any) {
++			client = null;
++			parentPort.postMessage({ type: "initError", error: String(err?.message ?? err) });
++		}
++		return;
++	}
++
++	if (msg?.type === "call") {
++		const handler = methods[msg.method];
++		if (!handler) {
++			parentPort.postMessage({ type: "result", id: msg.id, error: `unknown method: ${msg.method}` });
++			return;
++		}
++		if (!client) {
++			parentPort.postMessage({ type: "result", id: msg.id, error: "steamworks not initialized" });
++			return;
++		}
++		try {
++			const result = await handler(msg.params ?? {});
++			parentPort.postMessage({ type: "result", id: msg.id, result });
++		} catch (err: any) {
++			parentPort.postMessage({ type: "result", id: msg.id, error: String(err?.message ?? err) });
++		}
++	}
++});
+diff --git a/src/frontend/main/services/workshopService.ts b/src/frontend/main/services/workshopService.ts
+index cabecf0..f8d2fc5 100644
+--- a/src/frontend/main/services/workshopService.ts
++++ b/src/frontend/main/services/workshopService.ts
+@@ -1,6 +1,8 @@
+-import { ipcMain } from "electron";
++import { ipcMain, utilityProcess, type UtilityProcess } from "electron";
++import { readdirSync, readFileSync } from "node:fs";
++import { join, dirname } from "node:path";
++import { fileURLToPath } from "node:url";
+ import { logger } from "../logger";
+-import { init } from "steamworks.js";
+ import { WALLPAPER_ENGINE_APP_ID } from "../../shared/constants";
+ import { socketClient } from "../socket-client";
+ 
+@@ -19,22 +21,189 @@ export interface WorkshopQueryOptions {
+ 	item_type?: number;
+ }
+ 
+-export function registerWorkshopService() {
+-	let steamworksClient: any = null;
++// Lightweight probe: is the Steam *client process* running?
++// Deliberately does NOT touch steamworks initialization.
++function isSteamClientProcessRunning(): boolean {
++	try {
++		for (const pid of readdirSync("/proc")) {
++			if (!/^\d+$/.test(pid)) continue;
++			try {
++				const comm = readFileSync(`/proc/${pid}/comm`, "utf8").trim();
++				if (comm === "steam" || comm === "steamwebhelper") return true;
++			} catch {
++				// process exited or not readable; skip
++			}
++		}
++	} catch {
++		// /proc unavailable
++	}
++	return false;
++}
+ 
+-	const getSteamworksClient = () => {
+-		if (steamworksClient) return steamworksClient;
++const SERVICE_DIR = dirname(fileURLToPath(import.meta.url));
++const WORKER_PATH = join(SERVICE_DIR, "steamworksWorker.js");
++const WORKER_INIT_TIMEOUT = 15000;
++const WORKER_CALL_TIMEOUT = 30000;
++const WORKER_RETRY_COOLDOWN = 30000;
++// The Flatpak Steam client only guarantees a ~2s IPC-safe window after
++// worker init; UGC calls outside that window trip an internal steam_api
++// assert that kills the worker process. The worker therefore retires
++// itself on a TTL and retries each failed call once with a fresh worker.
++class WorkshopWorker {
++	private child: any = null;
++	private nextId = 0;
++	private pending = new Map<number, { resolve: (value: any) => void; reject: (error: any) => void }>();
++	private unavailableUntil = 0;
++// WorkshopWorker — RPC client that isolates steamworks inside a
++// utilityProcess worker.
++//
++// Rationale: Valve's steam_api installs breakpad crash hooks into the host
++// process; their watcher pipe gets cut by Chromium's process/fd management
++// seconds after startup, and steam_api then fatally exits the host. The SDK
++// must therefore never initialize inside the UI process — it lives only in
++// the steamworksWorker.js utility process; if that worker dies, Workshop
++// degrades gracefully while the UI process stays unaffected.
++	async call<T = any>(method: string, params?: any, allowRetry = true): Promise<T> {
+ 		try {
+-			steamworksClient = init(WALLPAPER_ENGINE_APP_ID);
+-			logger.backend("Steamworks client initialized successfully");
+-			return steamworksClient;
+-		} catch (e: any) {
+-			return null;
++			const child = await this.ensure();
++			if (!child) {
++				throw new Error("steamworks unavailable");
++			}
++			return await this.rawCall<T>(method, params);
++		} catch (msg: any) {
++			// If the worker gets killed mid-call by the steam_api assert, the call is
++			// retried once with a fresh worker; other errors (e.g. Steam not running)
++			// are terminal and propagate.
++			if (!allowRetry || !/worker exited/.test(String(msg))) throw msg;
++			this.child = null;
++			this.unavailableUntil = Date.now() + WORKER_RESTART_COOLDOWN;
++			await new Promise((r) => setTimeout(r, WORKER_RESTART_COOLDOWN));
++			return await this.call(method, params, false);
++		}
++	}
++
++	private async rawCall<T = any>(method: string, params?: any): Promise<T> {
++		const child = await this.ensure();
++		if (!child) {
++			throw new Error("steamworks unavailable");
+ 		}
+-	};
++
++		const id = this.nextId++;
++		return new Promise<T>((resolve, reject) => {
++			const timer = setTimeout(() => {
++				this.pending.delete(id);
++				reject(new Error(`steamworks rpc timeout: ${method}`));
++			}, WORKER_CALL_TIMEOUT);
++			this.pending.set(id, { resolve, reject, timer });
++			child.postMessage({ type: "call", id, method, params });
++		});
++	}
++
++	private ensure(): Promise<UtilityProcess | null> {
++		if (this.child) {
++			if (Date.now() - this.bornAt <= WORKER_SAFE_WINDOW) {
++				return Promise.resolve(this.child);
++			}
++			// TTL exceeded: retire before the steam_api assert fires
++			try {
++				this.child.kill();
++			} catch {
++				// already gone
++			}
++			this.child = null;
++		}
++		if (Date.now() < this.unavailableUntil) return Promise.resolve(null);
++		if (this.starting) return this.starting.then(() => this.child);
++		this.starting = this.start().then(() => this.child);
++		return this.starting;
++	}
++
++	private start(): Promise<boolean> {
++		return new Promise<boolean>((resolve) => {
++			let child: UtilityProcess;
++			try {
++				child = utilityProcess.fork(WORKER_PATH, [], {
++					serviceName: "steamworks-worker",
++					stdio: "inherit",
++				});
++			} catch (err: any) {
++				logger.error(`Failed to fork steamworks worker: ${err?.message ?? err}`);
++				this.unavailableUntil = Date.now() + WORKER_RETRY_COOLDOWN;
++				return resolve(false);
++			}
++
++			this.child = child;
++			this.bornAt = Date.now();
++			logger.backend("Starting steamworks utility process...");
++
++			let settled = false;
++			const finish = (ok: boolean) => {
++				if (settled) return;
++				settled = true;
++				clearTimeout(guard);
++				if (!ok) {
++					this.unavailableUntil = Date.now() + WORKER_RETRY_COOLDOWN;
++				}
++				resolve(ok);
++			};
++
++			// init handshake timeout: kill the worker and enter cooldown
++			const guard = setTimeout(() => {
++				try {
++					child.kill();
++				} catch {
++					// already gone
++				}
++				finish(false);
++			}, WORKER_INIT_TIMEOUT);
++
++			child.on("message", (msg: any) => {
++				if (settled && msg?.type !== "result") return;
++				if (msg?.type === "ready") {
++					finish(true);
++					return;
++				}
++				if (msg?.type === "initError") {
++					logger.backend(`Steamworks worker init failed: ${msg.error}`);
++					try {
++						child.kill();
++					} catch {
++						// already gone
++					}
++					finish(false);
++					return;
++				}
++				if (msg?.type === "result") {
++					const entry = this.pending.get(msg.id);
++					if (!entry) return;
++					clearTimeout(entry.timer);
++					this.pending.delete(msg.id);
++					if (msg.error) entry.reject(new Error(msg.error));
++					else entry.resolve(msg.result);
++				}
++			});
++
++			child.on("exit", () => {
++				if (this.child === child) this.child = null;
++				for (const [, entry] of this.pending) {
++					clearTimeout(entry.timer);
++					entry.reject(new Error("steamworks worker exited"));
++				}
++				this.pending.clear();
++				finish(false);
++			});
++
++			child.postMessage({ type: "init", appId: WALLPAPER_ENGINE_APP_ID });
++		});
++	}
++}
++
++export function registerWorkshopService() {
++	const worker = new SteamworksWorker();
+ 
+ 	ipcMain.handle("is-steam-running", async () => {
+-		return !!getSteamworksClient();
++		// answers whether the Steam client process runs; never initializes steamworks
++		return isSteamClientProcessRunning();
+ 	});
+ 
+ 	ipcMain.handle(
+@@ -46,16 +215,13 @@ export function registerWorkshopService() {
+ 				return [];
+ 			}
+ 
+-			const client = getSteamworksClient();
+-			if (!client) {
+-				throw new Error("Steamworks client not initialized");
+-			}
+-
+ 			try {
+-				const bigIntIds = fileIds.map(id => BigInt(id));
+-				const result = await client.workshop.getItems(bigIntIds, {
+-					includeMetadata: true,
+-					includeAdditionalPreviews: true
++				const result = await worker.call<any>("getItems", {
++					ids: fileIds,
++					opts: {
++						includeMetadata: true,
++						includeAdditionalPreviews: true
++					}
+ 				});
+ 
+ 				return (result?.items || []).filter((it: any) => it).map((it: any) => ({
+@@ -71,7 +237,7 @@ export function registerWorkshopService() {
+ 					views: Number(it.statistics?.numUniqueWebsiteViews || 0),
+ 				}));
+ 			} catch (error) {
+-				logger.error("Error fetching published file details:", error);
++				logger.error("Error fetching published file details:", error?.message ?? error);
+ 				throw error;
+ 			}
+ 		},
+@@ -82,12 +248,6 @@ export function registerWorkshopService() {
+ 		async (_: any, options: WorkshopQueryOptions = {}) => {
+ 			logger.ipcReceived("query-workshop-files", options);
+ 
+-			const client = getSteamworksClient();
+-			if (!client) {
+-				logger.error("Steamworks client not initialized");
+-				throw new Error("Steamworks client not initialized");
+-			}
+-
+ 			try {
+ 				const requestedPageSize = options.numperpage ?? 50;
+ 				const frontendPage = options.page ?? 1;
+@@ -113,71 +273,19 @@ export function registerWorkshopService() {
+ 					queryConfig.matchAnyTag = true;
+ 				}
+ 
+-				let totalResults = 0;
+-				const allMergedItems: any[] = [];
+-
+-				const itemTypesToTry = [requestedItemType, 13, 0];
+-				const queryTypesToTry = Array.from(new Set([requestedQueryType, 13, 1, 2, 9]));
+-
+-				let bestQT = requestedQueryType;
+-				let bestIT = requestedItemType;
+-				let typesFound = false;
+-
+-				for (const qt of queryTypesToTry) {
+-					for (const it of itemTypesToTry) {
+-						try {
+-							const res = await client.workshop.getAllItems(
+-								startingSteamPage,
+-								qt,
+-								it,
+-								WALLPAPER_ENGINE_APP_ID,
+-								WALLPAPER_ENGINE_APP_ID,
+-								queryConfig,
+-							);
+-
+-							if ((res?.items || []).length > 0 || (res?.totalResults || 0) > 0) {
+-								bestQT = qt;
+-								bestIT = it;
+-								typesFound = true;
+-								totalResults = res?.totalResults || 0;
+-								allMergedItems.push(...(res?.items || []).filter((i: any) => i));
+-								break;
+-							}
+-						} catch (e: any) {
+-							logger.error(`getAllItems failed (queryType=${qt}, itemType=${it}):`, e?.message);
+-						}
+-					}
+-					if (typesFound) break;
+-				}
+-
+-				if (typesFound && steamPagesPerFrontendPage > 1) {
+-					for (let i = 1; i < steamPagesPerFrontendPage; i++) {
+-						const currentSteamPage = startingSteamPage + i;
+-						if (allMergedItems.length >= totalResults && totalResults > 0) break;
+-
+-						try {
+-							const res = await client.workshop.getAllItems(
+-								currentSteamPage,
+-								bestQT,
+-								bestIT,
+-								WALLPAPER_ENGINE_APP_ID,
+-								WALLPAPER_ENGINE_APP_ID,
+-								queryConfig,
+-							);
+-							if (res?.items) {
+-								allMergedItems.push(...res.items.filter((i: any) => i));
+-							}
+-						} catch (e: any) {
+-							logger.error(`Multi-page fetch failed for Steam page ${currentSteamPage}:`, e?.message);
+-						}
+-					}
+-				}
+-
+-				if (allMergedItems.length > requestedPageSize) {
+-					allMergedItems.length = requestedPageSize;
+-				}
++				const res = await worker.call<any>("searchAllItems", {
++					startingSteamPage,
++					queryTypesToTry: Array.from(new Set([requestedQueryType, 13, 1, 2, 9])),
++					itemTypesToTry: [requestedItemType, 13, 0],
++					appId: WALLPAPER_ENGINE_APP_ID,
++					queryConfig,
++					steamPagesPerFrontendPage,
++					requestedPageSize,
++					requestedQueryType,
++					requestedItemType,
++				});
+ 
+-				const mappedItems = allMergedItems.map((it: any) => ({
++				const mappedItems = (res?.items || []).map((it: any) => ({
+ 					...it,
+ 					publishedfileid: it.publishedFileId?.toString(),
+ 					result: 1,
+@@ -192,11 +300,11 @@ export function registerWorkshopService() {
+ 
+ 				return {
+ 					items: mappedItems,
+-					total: totalResults,
++					total: res?.totalResults || 0,
+ 					nextCursor: null,
+ 				};
+ 			} catch (error: any) {
+-				logger.error("Error in query-workshop-files:", error);
++				logger.error("Error in query-workshop-files:", error?.message ?? error);
+ 				return { items: [], total: 0, nextCursor: null, error: error?.message };
+ 			}
+ 		},
+@@ -211,16 +319,14 @@ export function registerWorkshopService() {
+ 				throw new Error("UGC ID is required");
+ 			}
+ 
+-			const client = getSteamworksClient();
+-			if (!client) {
+-				throw new Error("Steamworks client not initialized");
+-			}
+-
+ 			try {
+-				const it = await client.workshop.getItem(BigInt(ugcId), {
+-					includeMetadata: true,
+-					includeAdditionalPreviews: true,
+-					includeLongDescription: true
++				const it = await worker.call<any>("getItem", {
++					id: ugcId,
++					opts: {
++						includeMetadata: true,
++						includeAdditionalPreviews: true,
++						includeLongDescription: true
++					}
+ 				});
+ 
+ 				if (!it) return null;
+@@ -237,10 +343,9 @@ export function registerWorkshopService() {
+ 					favorites: Number(it.statistics?.numFavorites || 0),
+ 					views: Number(it.statistics?.numUniqueWebsiteViews || 0),
+ 					fileSize: Number(it.fileSize || it.file_size || 0),
+-					_raw: it,
+ 				};
+ 			} catch (error) {
+-				logger.error("Error fetching UGC file details:", error);
++				logger.error("Error fetching UGC file details:", error?.message ?? error);
+ 				throw error;
+ 			}
+ 		},
+@@ -248,26 +353,18 @@ export function registerWorkshopService() {
+ 
+ 	ipcMain.handle("subscribe-workshop-item", async (_, fileId: string) => {
+ 		logger.ipcReceived("subscribe-workshop-item", fileId);
+-		const client = getSteamworksClient();
+-		if (!client) {
+-			throw new Error("Steamworks client not initialized");
+-		}
+ 
+ 		try {
+-			await client.workshop.subscribe(BigInt(fileId));
++			await worker.call("subscribe", { id: fileId });
+ 			return { success: true };
+ 		} catch (error) {
+-			logger.error(`Error subscribing to item ${fileId}:`, error);
++			logger.error(`Error subscribing to item ${fileId}:`, error?.message ?? error);
+ 			throw error;
+ 		}
+ 	});
+ 
+ 	ipcMain.handle("unsubscribe-workshop-item", async (_, fileId: string) => {
+ 		logger.ipcReceived("unsubscribe-workshop-item", fileId);
+-		const client = getSteamworksClient();
+-		if (!client) {
+-			throw new Error("Steamworks client not initialized");
+-		}
+ 
+ 		try {
+ 			// Kill the wallpaper before unsubscribing
+@@ -277,53 +374,42 @@ export function registerWorkshopService() {
+ 				logger.error(`Failed to kill wallpaper ${fileId} before unsubscription:`, e);
+ 			}
+ 
+-			await client.workshop.unsubscribe(BigInt(fileId));
++			await worker.call("unsubscribe", { id: fileId });
+ 			return { success: true };
+ 		} catch (error) {
+-			logger.error(`Error unsubscribing from item ${fileId}:`, error);
++			logger.error(`Error unsubscribing from item ${fileId}:`, error?.message ?? error);
+ 			throw error;
+ 		}
+ 	});
+ 
+ 	ipcMain.handle("get-all-downloading-items", async () => {
+-		const client = getSteamworksClient();
+-		if (!client) return [];
+-
++		// passive polling: return empty while the worker is down, never spawn it
++		if (!worker.isAvailable()) return [];
+ 		try {
+-			const subscribedItems = client.workshop.getSubscribedItems();
+-			const downloadingItems: any[] = [];
+-
+-			for (const fileId of subscribedItems) {
+-				const state = client.workshop.state(fileId);
+-				// 16 = Downloading, 32 = Download Pending
+-				if ((state & 16) || (state & 32)) {
+-					const info = client.workshop.downloadInfo(fileId);
+-					if (info) {
+-						downloadingItems.push({
+-							fileId: fileId.toString(),
+-							current: info.current.toString(),
+-							total: info.total.toString(),
+-							state
+-						});
+-					}
+-				}
+-			}
+-			return downloadingItems;
++			return await worker.call("getDownloadingItems");
+ 		} catch (error) {
+-			logger.error("Error fetching all downloading items:", error);
++			logger.error("Error fetching all downloading items:", error?.message ?? error);
+ 			return [];
+ 		}
+ 	});
+ 
+ 	ipcMain.handle("get-subscribed-items", async () => {
+-		const client = getSteamworksClient();
+-		if (!client) return [];
++		// worker available -> real subscription list; otherwise fall back to
++		// locally downloaded IDs so the home list stays complete
++		if (worker.isAvailable()) {
++			try {
++				const subscribedItems = await worker.call<string[]>("getSubscribedItems");
++				return subscribedItems.map((id) => id.toString());
++			} catch (error) {
++				logger.error("Error fetching subscribed items:", error?.message ?? error);
++			}
++		}
+ 
+ 		try {
+-			const subscribedItems = client.workshop.getSubscribedItems();
+-			return subscribedItems.map((id: bigint) => id.toString());
+-		} catch (error) {
+-			logger.error("Error fetching subscribed items:", error);
++			const basePath = await socketClient.send("get-wallpaper-base-path");
++			if (typeof basePath !== "string" || !basePath) return [];
++			return readdirSync(basePath).filter((name) => /^\d+$/.test(name));
++		} catch {
+ 			return [];
+ 		}
+ 	});
+@@ -331,17 +417,9 @@ export function registerWorkshopService() {
+ 	ipcMain.handle(
+ 		"get-workshop-item-download-info",
+ 		async (_, fileId: string) => {
+-			const client = getSteamworksClient();
+-			if (!client) return null;
+-
++			if (!worker.isAvailable()) return null;
+ 			try {
+-				const info = client.workshop.downloadInfo(BigInt(fileId));
+-				if (!info) return null;
+-
+-				return {
+-					current: info.current.toString(),
+-					total: info.total.toString(),
+-				};
++				return await worker.call("getDownloadInfo", { id: fileId });
+ 			} catch (error) {
+ 				return null;
+ 			}
+@@ -349,17 +427,9 @@ export function registerWorkshopService() {
+ 	);
+ 
+ 	ipcMain.handle("get-workshop-item-install-info", async (_, fileId: string) => {
+-		const client = getSteamworksClient();
+-		if (!client) return null;
+-
++		if (!worker.isAvailable()) return null;
+ 		try {
+-			const info = client.workshop.installInfo(BigInt(fileId));
+-			if (!info) return null;
+-
+-			return {
+-				...info,
+-				sizeOnDisk: info.sizeOnDisk.toString(),
+-			};
++			return await worker.call("getInstallInfo", { id: fileId });
+ 		} catch (error) {
+ 			return null;
+ 		}
+diff --git a/vite.config.ts b/vite.config.ts
+index ebbb417..a5764f6 100644
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -13,7 +13,8 @@ export default defineConfig({
+ 		svelte(),
+ 		electron({
+ 			main: {
+-				entry: "src/frontend/main/main.ts",
++				// main process + steamworks worker (utilityProcess) entries
++				entry: ["src/frontend/main/main.ts", "src/frontend/main/services/steamworksWorker.ts"],
+ 				vite: {
+ 					build: {
+ 						outDir: "build/frontend/electron",

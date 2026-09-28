@@ -1,0 +1,210 @@
+diff --git a/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.cpp b/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.cpp
+index 01063d9..8852469 100644
+--- a/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.cpp
++++ b/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.cpp
+@@ -10,6 +10,9 @@
+ #include "WallpaperEngine/Debugging/CallStack.h"
+ 
+ #include <GLFW/glfw3native.h>
++#ifdef ENABLE_X11
++#include <X11/Xatom.h>
++#endif
+ 
+ #include <unistd.h>
+ 
+@@ -97,6 +100,48 @@ void GLFWOpenGLDriver::showWindow () { glfwShowWindow (this->m_window); }
+ 
+ void GLFWOpenGLDriver::hideWindow () { glfwHideWindow (this->m_window); }
+ 
++void GLFWOpenGLDriver::promoteToDesktopWindow () {
++#ifdef ENABLE_X11
++    // turn the GLFW window into a desktop-layer window: the compositor keeps
++    // it below everything else, and translucent desktop shells (peony-qt-desktop
++    // under ukui-kwin, etc.) show it through as the live wallpaper
++    glfwWindowHint (GLFW_FLOATING, GLFW_FALSE);
++
++    Display* display = XOpenDisplay (nullptr);
++    if (display == nullptr) {
++	sLog.error ("promoteToDesktopWindow: cannot open X display, window stays hidden");
++	return;
++    }
++
++    const Window window = glfwGetX11Window (this->m_window);
++
++    // desktop window type -> compositor's desktop layer (below everything)
++    Atom windowTypeAtom = XInternAtom (display, "_NET_WM_WINDOW_TYPE", False);
++    Atom desktopAtom = XInternAtom (display, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
++    XChangeProperty (display, window, windowTypeAtom, XA_ATOM, 32, PropModeReplace,
++		     reinterpret_cast<const unsigned char*> (&desktopAtom), 1);
++
++    // keep below, never take focus
++    Atom stateAtom = XInternAtom (display, "_NET_WM_STATE", False);
++    Atom belowAtom = XInternAtom (display, "_NET_WM_STATE_BELOW", False);
++    XChangeProperty (display, window, stateAtom, XA_ATOM, 32, PropModeReplace,
++		     reinterpret_cast<const unsigned char*> (&belowAtom), 1);
++
++    XWMHints hints {};
++    hints.flags = InputHint;
++    hints.input = False;
++    XSetWMHints (display, window, &hints);
++
++    XSync (display, False);
++    XCloseDisplay (display);
++
++    // map the window (GLFW created it hidden)
++    this->showWindow ();
++#else
++    sLog.error ("promoteToDesktopWindow: not built with X11 support");
++#endif /* ENABLE_X11 */
++}
++
+ glm::ivec2 GLFWOpenGLDriver::getFramebufferSize () const {
+     glm::ivec2 size;
+ 
+diff --git a/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.h b/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.h
+index 6061400..5452824 100644
+--- a/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.h
++++ b/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.h
+@@ -28,6 +28,7 @@ public:
+     void resizeWindow (glm::ivec4 sizeandpos) override;
+     void showWindow () override;
+     void hideWindow () override;
++    void promoteToDesktopWindow () override;
+     [[nodiscard]] glm::ivec2 getFramebufferSize () const override;
+     [[nodiscard]] uint32_t getFrameCounter () const override;
+     void dispatchEventQueue () override;
+diff --git a/src/WallpaperEngine/Render/Drivers/Output/X11Output.cpp b/src/WallpaperEngine/Render/Drivers/Output/X11Output.cpp
+index 193ab8d..87ae779 100644
+--- a/src/WallpaperEngine/Render/Drivers/Output/X11Output.cpp
++++ b/src/WallpaperEngine/Render/Drivers/Output/X11Output.cpp
+@@ -60,21 +60,44 @@ void X11Output::free () {
+     this->m_screens.clear ();
+     this->m_viewports.clear ();
+ 
+-    // free all the resources we've got
+-    XDestroyImage (this->m_image);
+-    XFreeGC (this->m_display, this->m_gc);
+-    XFreePixmap (this->m_display, this->m_pixmap);
++    // free all the resources we've got (image/pixmap/gc only exist in
++    // root-pixmap mode, they're null in desktop-window mode)
++    if (this->m_image != nullptr) {
++	XDestroyImage (this->m_image);
++	this->m_image = nullptr;
++    }
++    if (this->m_gc != None) {
++	XFreeGC (this->m_display, this->m_gc);
++	this->m_gc = None;
++    }
++    if (this->m_pixmap != None) {
++	XFreePixmap (this->m_display, this->m_pixmap);
++	this->m_pixmap = None;
++    }
+     delete this->m_imageData;
+-    XCloseDisplay (this->m_display);
++    this->m_imageData = nullptr;
++    if (this->m_display != nullptr) {
++	XCloseDisplay (this->m_display);
++	this->m_display = nullptr;
++    }
+ }
+ 
+ void* X11Output::getImageBuffer () const { return this->m_imageData; }
+ 
+-bool X11Output::renderVFlip () const { return false; }
++bool X11Output::renderVFlip () const {
++    // desktop-window mode renders straight into the window like window mode
++    // does; the old root-pixmap path needed no flip because the CPU readback
++    // (bottom-up GL) + XPutImage (top-down) cancelled each other out
++    return true;
++}
+ 
+ bool X11Output::renderMultiple () const { return this->m_viewports.size () > 1; }
+ 
+-bool X11Output::haveImageBuffer () const { return true; }
++bool X11Output::haveImageBuffer () const {
++    // desktop-window mode renders straight into the mapped window, no CPU
++    // readback needed
++    return false;
++}
+ 
+ uint32_t X11Output::getImageBufferSize () const { return this->m_imageSize; }
+ 
+@@ -196,7 +219,7 @@ void X11Output::validateOutputs () const {
+ 
+ 	sLog.error ("Requested: ");
+ 
+-	for (const auto& o : this->m_context.settings.general.screenBackgrounds | std::views::keys) {
++	for (const auto& [o, value] : this->m_context.settings.general.screenBackgrounds) {
+ 	    sLog.error ("  ", o);
+ 	}
+ 
+@@ -205,42 +228,16 @@ void X11Output::validateOutputs () const {
+ }
+ 
+ void X11Output::initX11Background () {
+-    // create pixmap so we can draw things in there
+-    this->m_pixmap = XCreatePixmap (this->m_display, this->m_root, this->m_fullWidth, this->m_fullHeight, 24);
+-    this->m_gc = XCreateGC (this->m_display, this->m_pixmap, 0, nullptr);
+-    // pre-fill it with black
+-    XFillRectangle (this->m_display, this->m_pixmap, this->m_gc, 0, 0, this->m_fullWidth, this->m_fullHeight);
+-    // set the window background as our pixmap
+-    XSetWindowBackgroundPixmap (this->m_display, this->m_root, this->m_pixmap);
+-    // allocate space for the image's data
+-    this->m_imageSize = this->m_fullWidth * this->m_fullHeight * 4;
+-    this->m_imageData = new char[this->m_fullWidth * this->m_fullHeight * 4];
+-    // create an image so we can copy it over
+-    this->m_image = XCreateImage (
+-	this->m_display, CopyFromParent, 24, ZPixmap, 0, this->m_imageData, this->m_fullWidth, this->m_fullHeight, 32, 0
+-    );
+-    // setup driver's render changing the window's size
+-    this->m_driver.resizeWindow ({ this->m_fullWidth, this->m_fullHeight });
++    // desktop-window mode: instead of painting the root window's background
++    // pixmap (which desktop shells like peony-qt-desktop cover anyway), the
++    // engine's own window is promoted to a DESKTOP-layer window. The
++    // compositor keeps it below every other window and translucent desktop
++    // shells show it through as the live wallpaper.
++    this->m_driver.resizeWindow ({ 0, 0, this->m_fullWidth, this->m_fullHeight });
++    this->m_driver.promoteToDesktopWindow ();
+ }
+ 
+ void X11Output::updateRender () const {
+-    // put the image back into the screen
+-    XPutImage (
+-	this->m_display, this->m_pixmap, this->m_gc, this->m_image, 0, 0, 0, 0, this->m_fullWidth, this->m_fullHeight
+-    );
+-
+-    // _XROOTPMAP_ID & ESETROOT_PMAP_ID allow other programs (compositors) to
+-    // edit the background. Without these, other programs will clear the screen.
+-    // it also forces the compositor to refresh the background (tested with picom)
+-    const Atom prop_root = XInternAtom (this->m_display, "_XROOTPMAP_ID", False);
+-    const Atom prop_esetroot = XInternAtom (this->m_display, "ESETROOT_PMAP_ID", False);
+-    XChangeProperty (
+-	this->m_display, this->m_root, prop_root, XA_PIXMAP, 32, PropModeReplace, (unsigned char*)&this->m_pixmap, 1
+-    );
+-    XChangeProperty (
+-	this->m_display, this->m_root, prop_esetroot, XA_PIXMAP, 32, PropModeReplace, (unsigned char*)&this->m_pixmap, 1
+-    );
+-
+-    XClearWindow (this->m_display, this->m_root);
+-    XFlush (this->m_display);
++    // desktop-window mode renders straight into the mapped window, there is
++    // no root background pixmap to upload
+ }
+diff --git a/src/WallpaperEngine/Render/Drivers/VideoDriver.h b/src/WallpaperEngine/Render/Drivers/VideoDriver.h
+index 505d18e..6710cbc 100644
+--- a/src/WallpaperEngine/Render/Drivers/VideoDriver.h
++++ b/src/WallpaperEngine/Render/Drivers/VideoDriver.h
+@@ -54,6 +54,13 @@ public:
+      * Hides the window created by the driver
+      */
+     virtual void hideWindow () = 0;
++    /**
++     * Promotes the driver's window to a desktop-layer window (X11: sets
++     * _NET_WM_WINDOW_TYPE_DESKTOP + BELOW pre-map and maps it), so the
++     * compositor keeps it under every other window and translucent desktop
++     * shells (peony, etc.) can show it through.
++     */
++    virtual void promoteToDesktopWindow () {}
+     /**
+      * @return The size of the framebuffer available for the driver
+      */

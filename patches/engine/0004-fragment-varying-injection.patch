@@ -1,0 +1,69 @@
+--- a/src/WallpaperEngine/Render/Shaders/ShaderUnit.cpp
++++ b/src/WallpaperEngine/Render/Shaders/ShaderUnit.cpp
+@@ -414,6 +414,47 @@
+     return source;
+ }
+ 
++std::string ShaderUnit::applyFragmentVaryingInjection (std::string source) const {
++    // wallpapers authored for WE may consume vertex varyings in the fragment
++    // stage without declaring them (the original compiler forwards varyings
++    // between stages automatically); re-declare the missing ones so the
++    // fragment unit compiles
++    if (this->m_type != GLSLContext::UnitType_Fragment || this->m_link == nullptr) {
++	return source;
++    }
++
++    static const std::regex vertexVaryingDecl (R"(\bvarying\s+(\w+)\s+(\w+)\s*;)");
++    std::string linked = this->m_link->m_preprocessed;
++
++    std::string missing;
++    for (std::sregex_iterator it = std::sregex_iterator (linked.begin (), linked.end (), vertexVaryingDecl);
++         it != std::sregex_iterator (); it++) {
++	const std::string type = (*it)[1].str ();
++	const std::string name = (*it)[2].str ();
++
++	const std::regex declared ("\\b(varying|uniform|attribute)\\s+" + type + "\\s+" + name + "\\b");
++	if (std::regex_search (source, declared)) {
++	    continue;
++	}
++
++	const std::regex used ("\\b" + name + "\\b");
++	if (!std::regex_search (source, used)) {
++	    continue;
++	}
++
++	missing += "varying " + type + " " + name + ";\n";
++    }
++
++    if (!missing.empty ()) {
++	const size_t position = source.find ("void main");
++	if (position != std::string::npos) {
++	    source.insert (position, missing);
++	}
++    }
++
++    return source;
++}
++
+ std::string ShaderUnit::applyFragmentTexCoordCompatibility (std::string source) const {
+     if (this->m_type != GLSLContext::UnitType_Fragment) {
+ 	return source;
+@@ -715,7 +756,7 @@
+ 
+     // this should be the rest of the shader
+     this->m_final
+-	+= this->applyFragmentTexCoordCompatibility (this->applyLinkedVaryingCompatibility (this->m_preprocessed));
++	+= this->applyFragmentTexCoordCompatibility (this->applyLinkedVaryingCompatibility (this->applyFragmentVaryingInjection (this->m_preprocessed)));
+ 
+     // the pass itself handles shader compilation, the unit doesn't have enough information for this step
+     return this->m_final;
+--- a/src/WallpaperEngine/Render/Shaders/ShaderUnit.h
++++ b/src/WallpaperEngine/Render/Shaders/ShaderUnit.h
+@@ -100,6 +100,7 @@
+      * Adjusts vertex varyings when a workshop shader declares a narrower vertex type than its fragment peer.
+      */
+     [[nodiscard]] std::string applyLinkedVaryingCompatibility (std::string source) const;
++    [[nodiscard]] std::string applyFragmentVaryingInjection (std::string source) const;
+     /**
+      * Adjusts fragment shaders that use wide texture coordinates as vec2 values in Wallpaper Engine effects.
+      */
