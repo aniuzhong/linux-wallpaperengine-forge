@@ -8,8 +8,8 @@
 `git -C third_party/linux-wallpaperengine-gui diff` 查看当前差异, 对照下方说明
 把上游改动合并进对应补丁。
 
-注意: `src/backend/go.mod` 的 pkg/peony 接线**不属于任何补丁** —— 它由
-build-gui.sh 的 `go mod edit` 在每次构建时现场注入 (apply_patches 每轮
+注意: `src/backend/go.mod` 的 pkg/background 接线**不属于任何补丁** —— 它
+由 build-gui.sh 的 `go mod edit` 在每次构建时现场注入 (apply_patches 每轮
 会把 go.mod 重置回上游)。
 
 ## 逻辑补丁清单
@@ -26,12 +26,15 @@ worker 死亡时优雅降级), 由 build-gui.sh 构建期覆盖安装, 上游演
 全部逻辑, 手工改 diff 产生过 7 个静默缺陷 (未定义类名/常量/方法),
 esbuild 不做类型检查全部放行 —— 这正是该逻辑迁出自补丁的原因。
 
-### 002 — 桌面透明注入接线
+### 002 — V11 壁纸契约接线 (pkg/background)
 
-`app.go` 三处接线: 导入 pkg/peony、启动时
-`SetBridge(logger.Println)` + `go Attach()` (后台注入 UKUI 桌面壳,
-失败经日志桥浮出不阻断启动)、`Cleanup()` 里 `Detach()` 还原。
-注入逻辑全部在 forge 自有模块 `pkg/peony`, 这里只有接线。
+`app.go` 接线: 导入 pkg/background; 启动时 `Prepare()` (备份壁纸指针并
+指向全透明 PNG, 刷新 peony 重绘; 失败经日志浮出不阻断启动)、
+`SetDebugLogf` + `logger.Subscribe()` 转发协程 (引擎表面映射标记随日志
+行喂给 `IngestLine`)、`go WatchEngine()` (标记到达后 `Reorder()` 重启
+peony, 图标层抬回引擎上方); `Cleanup()` 里 `Detach()` 还原用户壁纸。
+契约逻辑全部在 forge 自有模块 `pkg/background`, 这里只有接线。另将
+config.go 默认 `Layer` 从 `bottom` 改为 `background`。
 
 ### 003 — 日志历史回放
 

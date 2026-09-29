@@ -1,35 +1,32 @@
-# engine 定制说明
+# engine 定制说明 (kylin/v11/x64)
 
 本目录的 .patch 文件按序套用在"上游钉住版本 (`ENGINE_REF`, 见 lib.sh)"
 的克隆上 (由 lib.sh 的 `apply_patches` 完成)。补丁本身是纯差异、不带
 注释 —— 含义与缘由统一放在本文件, 补丁内容变更时请同步更新对应条目。
 
 换 `ENGINE_REF` 时补丁可能因上下文变化套用失败 (显性报错): 用
-`git -C third_party/linux-wallpaperengine diff` 查看当前差异, 对照下方说明把
-上游改动合并进对应补丁。
+`git -C third_party/linux-wallpaperengine diff` 查看当前差异, 对照下方
+说明把上游改动合并进对应补丁。
 
 ## 逻辑补丁清单
 
-### 0001 — gcc9 / c++2a 兼容
+### 0001 — gcc12 缺包含修复 (最小兼容)
 
-麒麟 V10 SP1 的 gcc 9 最高支持 `-std=c++2a`, 上游按 C++17 构建。
-涉及 `CMakeLists.txt`、`CMakeModules/FindFFMPEG.cmake` 与约 20 个源文件的
-小修: 放宽 CEF 相关编译旗标、补齐缺失包含、规避 gcc9 不接受的写法
-(如部分指定初始化器)。
+上游钉住版本按 gcc9 时代头文件传递包含的习惯书写, gcc12 的 libstdc++
+更精简导致: `MediaSource.h` 缺 `<optional>`/`<memory>` (连带 MediaCover.cpp
+报 "no member url"), `MediaSource.cpp` 缺 `<memory>`; `ColorBuilder.cpp`
+使用 `<format>` (gcc13 才有), 改写为 `<sstream>`。
+涉及 `MediaSource.h/.cpp`、`ColorBuilder.cpp`。
 
-### 0002 — X11 桌面层窗口 (核心)
+验证状态: 构建+运行已验证 (v11 实机, 2026-09)。
 
-把引擎的 GLFW 窗口经 X11 属性提升为桌面层窗口:
-`_NET_WM_WINDOW_TYPE_DESKTOP` + `_NET_WM_STATE_BELOW` + `InputHint=False`,
-合成器 (ukui-kwin 等) 由此把它压到所有窗口之下, 引擎壁纸即桌面背景;
-`X11Output` 同步适配桌面窗口模式 (资源释放与垂直翻转修正), 替代旧的
-root-pixmap 路径。涉及 `GLFWOpenGLDriver.cpp/.h`、`X11Output.cpp`、
-`VideoDriver.h`。
+### 0002 — Wayland 映射标记 (桌面层序时序)
 
-### 0003 — 场景原生分辨率
-
-场景 FBO 按显示器原生分辨率渲染, 修正高分屏上的模糊。涉及
-`CWallpaper.h`、`CScene.cpp/.h`。
+引擎 layer surface 首次收到 configure 时向 stderr 打一行
+`[lwe] wayland output mapped`, 作为"表面已进入合成器场景"的确定性信号;
+GUI 后端 (pkg/background.WatchEngine) 经日志流捕获该行后执行 `Reorder()`
+重启 peony, 使桌面图标层抬回引擎上方 (同层内后映射者居上)。涉及
+`WaylandOutputViewport.cpp`。
 
 ### 0004 — 片段着色器 varying 注入
 
@@ -41,12 +38,10 @@ root-pixmap 路径。涉及 `GLFWOpenGLDriver.cpp/.h`、`X11Output.cpp`、
 `project.json` / object 字段缺失或类型不符时降级处理, 不再抛异常终止
 整个引擎。涉及 `ObjectParser.cpp`、`WallpaperParser.cpp`。
 
-### 0006 — Wayland 可选
-
-wayland 开发库缺失时仅构建 X11 后端 (麒麟交付目标本就是 X11)。
-涉及 `CMakeLists.txt`。
+0004/0005 验证状态: v11 下已验证 gcc12 构建兼容, 运行时效果待拿一张着色器
+类工坊壁纸复验。两者修复的是与操作系统无关的上游内容兼容 bug; 若删除,
+着色器壁纸编译崩溃与畸形 project.json 崩溃将回归。
 
 ## 文件重叠说明
 
-`CMakeLists.txt` 同时承载 0001 (编译旗标) 与 0006 (Wayland 可选) 两项
-修改, hunks 位于不同区段, 按序套用互不干扰。其余文件与补丁一一对应。
+各补丁触及文件互不重叠, 按序套用互不干扰。

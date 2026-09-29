@@ -20,8 +20,11 @@ source ./lib.sh
 init_log engine
 ENGINE_SRC="$THIRD_PARTY/linux-wallpaperengine"
 
+# kare (V11) 环境: 只读 /usr 上构建前先就位依赖垫片 (非 kare 机器为空操作)
+ensure_dep_shims
+
 # ---- 1. 系统依赖探测 ----
-# 清单即引擎在麒麟 V10 SP1 上的全部构建依赖; 只探测并给出安装命令, 不代装。
+# 清单即引擎的全部构建依赖; 只探测并给出安装命令, 不代装。
 log "Probing system dependencies..."
 probe_reset
 check_cmd git git
@@ -37,7 +40,8 @@ check_lib xi libxi-dev
 check_lib xxf86vm libxxf86vm-dev
 check_lib xcb-randr libxcb-randr0-dev
 check_lib glew libglew-dev
-check_header /usr/include/GL/glut.h freeglut3-dev
+# kare 环境机器上 dev 头可能落在 merge 树而非 /usr/include, 多路径命中即可
+check_header "/usr/include/GL/glut.h:/opt/kare-applications/shadow/merge/usr/include/GL/glut.h" freeglut3-dev
 check_lib sdl2 libsdl2-dev
 check_lib liblz4 liblz4-dev
 check_lib libavcodec libavcodec-dev
@@ -53,14 +57,19 @@ check_lib dbus-1 libdbus-1-dev
 check_lib zlib zlib1g-dev
 check_lib libpng libpng-dev
 check_lib gmp libgmp-dev
-check_header /usr/include/glm/glm.hpp libglm-dev
+check_header "/usr/include/glm/glm.hpp:/opt/kare-applications/shadow/merge/usr/include/glm/glm.hpp" libglm-dev
 probe_report
 
 # ---- 2. 源码 + 子模块 + 补丁 ----
 ensure_repo "https://github.com/Almamu/linux-wallpaperengine.git" "$ENGINE_SRC" "$ENGINE_REF"
 log "Syncing submodules (slow on first run) ..."
 git -C "$ENGINE_SRC" submodule update --init --recursive
-apply_patches "$ENGINE_SRC" "$FORGE_DIR/patches/engine"
+# FORGE_SKIP_PATCHES=1 构建无补丁上游 (冒烟/实验用)
+if [ "${FORGE_SKIP_PATCHES:-0}" = "1" ]; then
+	warn "FORGE_SKIP_PATCHES=1 — building UNPATCHED upstream (smoke/experiment build)"
+else
+	apply_patches "$ENGINE_SRC" "$FORGE_DIR/patches/engine"
+fi
 
 # ---- 3. 工具链 ----
 # glslang 子模块要求 cmake >= 3.22, 麒麟系统只有 3.16, 不足时落用户态
@@ -90,10 +99,12 @@ if [ -n "$(ls -A "$CEF_CACHE" 2>/dev/null)" ]; then
 fi
 
 log "Configuring CMake ..."
+# FORGE_CMAKE_ARGS: 追加 -D 缓存变量 (V11/kare 环境下为 find_path 提供路径提示)
 cmake -S "$ENGINE_SRC" -B "$BUILD_DIR" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_INSTALL_PREFIX="$PAYLOAD" \
-	-DBUILD_TESTING=OFF
+	-DBUILD_TESTING=OFF \
+	${FORGE_CMAKE_ARGS:-}
 log "Building ($(nproc) jobs) ..."
 cmake --build "$BUILD_DIR" -j"$(nproc)"
 log "Installing into $PAYLOAD ..."
@@ -121,7 +132,11 @@ log "Pruning non-runtime files from payload ..."
 		ffr-float fft-float psdpng-float st-float testcpp-float tkfc-float tr-float \
 		function_source run-test262 qjs qjsc \
 		glslang glslangValidator spirv-cross spirv-remap
-	find lib -mindepth 1 ! -name 'libkissfft-float.so*' -delete
+	# lib64: V11 的 CMake 库安装布局, lib 布局同样兼容
+	for libdir in lib lib64; do
+		[ -d "$libdir" ] || continue
+		find "$libdir" -mindepth 1 ! -name 'libkissfft-float.so*' -delete
+	done
 )
 
 log "=========================================="

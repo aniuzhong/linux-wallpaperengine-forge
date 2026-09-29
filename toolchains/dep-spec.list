@@ -1,0 +1,96 @@
+# dep-spec.list — kare 环境构建依赖的声明式清单
+#
+# 格式: pc名 | dev包候选(空格分隔,按序尝试) | 运行时包候选(空格分隔,可空)
+#   - pc名     : pkg-config 模块名; "-" 表示无 pc 的纯头文件/工具包 (总是安装)
+#   - dev包候选: 闭包循环发现缺此 pc 时按序尝试下载的 -dev 包
+#   - 运行时包 : 链接期需要 .so.N (符号链接的目标), 从中 dpkg -x 提取
+#
+# 维护约定: 新增依赖时在此登记, shims 会于下次构建自动重建
+# (dep-spec.list 的 mtime 触发重建, 见 kare-env.sh ensure_dep_shims)
+#
+# ---- 引擎 (build-engine.sh 探测清单) ----
+- | libglm-dev |
+- | freeglut3-dev libglu1-mesa-dev |
+mpv | libmpv-dev | libmpv2 libmpv1
+glfw3 | libglfw3-dev | libglfw3
+glew | libglew-dev | libglew2.2 libglew2.1
+sdl2 | libsdl2-dev | libsdl2-2.0-0
+liblz4 | liblz4-dev | liblz4-1
+libavcodec | libavcodec-dev | libavcodec60 libavcodec59 libavcodec58
+libavformat | libavformat-dev | libavformat60 libavformat59 libavformat58
+libavutil | libavutil-dev | libavutil58 libavutil57 libavutil56
+libswscale | libswscale-dev | libswscale7 libswscale6 libswscale5
+libpulse | libpulse-dev | libpulse0
+fftw3 | libfftw3-dev | libfftw3-double3 libfftw3-3
+dbus-1 | libdbus-1-dev | libdbus-1-3
+gmp | libgmp-dev | libgmp10
+egl | libegl-dev | libegl1
+gl | libgl-dev | libgl1
+opengl | libopengl-dev | libopengl0
+# ---- GUI (build-gui.sh 探测清单) ----
+gtk+-3.0 | libgtk-3-dev | libgtk-3-0 libgtk-3-0t64
+ayatana-appindicator3-0.1 | libayatana-appindicator3-dev | libayatana-appindicator3-1
+glib-2.0 | libglib2.0-dev | libglib2.0-0 libglib2.0-0t64
+gobject-2.0 | libglib2.0-dev | libglib2.0-0 libglib2.0-0t64
+gio-2.0 | libglib2.0-dev | libglib2.0-0 libglib2.0-0t64
+# ---- 传递依赖 (闭包循环会自动发现, 此处显式登记以固定包名) ----
+pango | libpango1.0-dev | libpango-1.0-0
+pangocairo | libpango1.0-dev | libpango-1.0-0
+cairo | libcairo2-dev | libcairo2
+cairo-gobject | libcairo2-dev | libcairo2
+gdk-pixbuf-2.0 | libgdk-pixbuf-2.0-dev | libgdk-pixbuf-2.0-0
+atk | libatk1.0-dev | libatk1.0-0 libatk1.0-0t64
+atk-bridge-2.0 | libatk-bridge2.0-dev | libatk-bridge2.0-0
+dbusmenu-glib-0.4 | libdbusmenu-glib-dev | libdbusmenu-glib4
+dbusmenu-gtk3-0.4 | libdbusmenu-gtk3-dev | libdbusmenu-gtk3-4
+libayatana-ido3-0.4 | libayatana-ido3-dev | libayatana-ido3-0.4-0
+ayatana-indicator3-0.4 | libayatana-indicator3-dev | libayatana-indicator3-7
+epoxy | libepoxy-dev | libepoxy0
+expat | libexpat1-dev | libexpat1
+fontconfig | libfontconfig-dev libfontconfig1-dev | libfontconfig1
+freetype2 | libfreetype-dev | libfreetype6
+harfbuzz | libharfbuzz-dev | libharfbuzz0b
+fribidi | libfribidi-dev | libfribidi0
+libthai | libthai-dev | libthai0
+datrie-0.2 | libdatrie-dev | libdatrie1
+libjpeg | libjpeg-turbo8-dev | libjpeg-turbo8
+libtiff-4 | libtiff-dev | libtiff6 libtiff5
+libdeflate | libdeflate-dev | libdeflate0
+liblzma | liblzma-dev | liblzma5
+libwebp | libwebp-dev | libwebp7
+libzstd | libzstd-dev | libzstd1
+pixman-1 | libpixman-1-dev | libpixman-1-0
+libpng | libpng-dev | libpng16-16 libpng16-16t64
+zlib | zlib1g-dev | zlib1g
+x11 | libx11-dev | libx11-6
+xext | libxext-dev | libxext6
+xfixes | libxfixes-dev | libxfixes3
+xcomposite | libxcomposite-dev | libxcomposite1
+xdamage | libxdamage-dev | libxdamage1
+xi | libxi-dev | libxi6
+xinerama | libxinerama-dev | libxinerama1
+xrandr | libxrandr-dev | libxrandr2
+xxf86vm | libxxf86vm-dev | libxxf86vm1
+xkbcommon | libxkbcommon-dev | libxkbcommon0
+xcb | libxcb1-dev | libxcb1
+xcb-randr | libxcb-randr0-dev | libxcb-randr0
+xcb-shm | libxcb-shm0-dev | libxcb-shm0
+xcb-render | libxcb-render0-dev | libxcb-render0
+wayland-client | libwayland-dev | libwayland-client0
+wayland-cursor | libwayland-dev | libwayland-cursor0
+wayland-egl | libwayland-dev | libwayland-egl1
+# ---- 纯数据/工具包 (无运行时库) ----
+wayland-protocols | wayland-protocols |
+# ---- 闭包循环新发现的传递依赖 ----
+atspi-2 | libatspi2.0-dev | libatspi2.0-0
+glu | libglu1-mesa-dev | libglu1-mesa9
+kbproto | x11proto-dev |
+xextproto | x11proto-dev |
+renderproto | x11proto-dev |
+xproto | x11proto-dev |
+libbrotlidec | libbrotli-dev | libbrotli1
+libsharpyuv | libsharpyuv-dev | libsharpyuv0
+libswresample | libswresample-dev | libswresample4 libswresample3
+# ---- 仅头文件 (宿主进程解析 Qt 符号, peony-alpha/探针编译用) ----
+Qt5Core | qtbase5-dev |
+Qt5Gui | qtbase5-dev |

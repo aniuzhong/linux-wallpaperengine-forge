@@ -3,7 +3,8 @@
 # build-shim.sh — 编译 UKUI 桌面透明注入器 libpeony-alpha.so
 #
 # 源码:   src/peony-qt-desktop/ (forge 自有源码, 单翻译单元, 非上游克隆)
-# 产物:   out/integration/libpeony-alpha.so (打包时由 package.sh 收入套件 lib/)
+# 产物:   out/integration/libpeony-alpha.so (V10 线注入库; V11 套件走
+#         pkg/background 壁纸契约零注入, package.sh 不收取本产物)
 # 日志:   out/build-shim.log
 #
 # 说明:   构建要求刻意压到最低: cmake >= 3.16 (麒麟系统 3.16 直接达标,
@@ -74,5 +75,5 @@ fi
 
 log "=========================================="
 log "Shim build complete: $SHIM_SO"
-log "Deployed to suite lib/ by package.sh"
+log "V10-line component: not shipped with the V11 suite (zero injection under the wallpaper contract)"
 log "=========================================="

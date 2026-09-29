@@ -142,11 +142,19 @@ check_lib() { # <pkg-config模块> <提供的软件包>
 	fi
 }
 
-check_header() { # <头文件路径> <提供的软件包>
-	if [ ! -e "$1" ]; then
-		warn "Missing header: $1 (package: $2)"
-		PROBE_MISSING+=("$2")
-	fi
+check_header() { # <头文件路径[:备选路径...]> <提供的软件包>
+	# 多候选路径: 冒号分隔, 命中任一即通过 (kare 环境下 dev 头可能不在 /usr/include)
+	local p oldIFS=$IFS
+	IFS=:
+	for p in $1; do
+		if [ -e "$p" ]; then
+			IFS=$oldIFS
+			return 0
+		fi
+	done
+	IFS=$oldIFS
+	warn "Missing header: $1 (package: $2)"
+	PROBE_MISSING+=("$2")
 }
 
 probe_report() {
@@ -216,8 +224,10 @@ ensure_rust() {
 		"https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init" \
 		|| die "Failed to download rustup-init"
 	chmod +x /tmp/forge-rustup-init
-	/tmp/forge-rustup-init -y --profile minimal --default-toolchain stable --no-modify-path
-	rm -f /tmp/forge-rustup-init
+	# rustup 1.28+ 按 argv0 分发: 必须以 rustup-init 之名运行, 否则被当作未知代理
+	mv -f /tmp/forge-rustup-init /tmp/rustup-init
+	/tmp/rustup-init -y --profile minimal --default-toolchain stable --no-modify-path
+	rm -f /tmp/rustup-init
 	mkdir -p "$CARGO_HOME"
 	cat > "$CARGO_HOME/config.toml" <<'EOF'
 [source.crates-io]
@@ -252,3 +262,8 @@ ensure_cmake() {
 	rm -f /tmp/forge-cmake.tar.gz
 	log "CMake: $(cmake --version | head -n1 | awk '{print $3}') (user-space)"
 }
+
+# ---- kare (V11 磐石) 环境挂钩 -------------------------------------------------
+# 只读 /usr 上自动启用依赖垫片与规范环境; 常规宿主自动旁路 (空操作)。
+# 检测与导出逻辑见 toolchains/kare-env.sh, 依赖清单见 toolchains/dep-spec.list
+source "$FORGE_DIR/toolchains/kare-env.sh"

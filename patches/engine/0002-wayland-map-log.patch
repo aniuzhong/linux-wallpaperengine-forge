@@ -1,0 +1,29 @@
+diff --git a/src/WallpaperEngine/Render/Drivers/Output/WaylandOutputViewport.cpp b/src/WallpaperEngine/Render/Drivers/Output/WaylandOutputViewport.cpp
+index 35a9bfa..b75b91e 100644
+--- a/src/WallpaperEngine/Render/Drivers/Output/WaylandOutputViewport.cpp
++++ b/src/WallpaperEngine/Render/Drivers/Output/WaylandOutputViewport.cpp
+@@ -13,6 +13,8 @@ extern "C" {
+ #undef namespace
+ #undef static
+ 
++#include <cstdio>
++
+ using namespace WallpaperEngine::Render::Drivers;
+ using namespace WallpaperEngine::Render::Drivers::Output;
+ 
+@@ -23,6 +25,15 @@ static void handleLSConfigure (void* data, zwlr_layer_surface_v1* surface, uint3
+     viewport->viewport = { 0, 0, viewport->size.x * viewport->scale, viewport->size.y * viewport->scale };
+     viewport->resize ();
+ 
++    // the first configure event is the deterministic signal that the surface
++    // has entered the compositor scene; announce it once for the desktop
++    // layer-order coordinator
++    static bool mapAnnounced = false;
++    if (! mapAnnounced) {
++        mapAnnounced = true;
++        fprintf (stderr, "[lwe] wayland output mapped\n");
++    }
++
+     zwlr_layer_surface_v1_ack_configure (surface, serial);
+ }
+ 

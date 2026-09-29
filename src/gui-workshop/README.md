@@ -2,7 +2,7 @@
 
 forge 自有的 GUI 前端源码（TypeScript/Electron 主进程），构建时由
 `build-gui.sh` 整体覆盖到 GUI 源码树对应路径（overlay 模式），
-**不经过补丁**。与 Go 侧 `pkg/peony`（go.mod replace 接入）同一教义：
+**不经过补丁**。与 Go 侧 `pkg/background`（go.mod replace 接入）同一教义：
 逻辑进自有源码，补丁只留接线（001 补丁仅剩 `vite.config.ts` 的
 worker 入口行）。
 

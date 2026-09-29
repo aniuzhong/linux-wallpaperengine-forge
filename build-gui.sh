@@ -3,7 +3,7 @@
 # build-gui.sh — 编译 linux-wallpaperengine-gui (Electron 前端 + Go 后端)
 #
 # 源码:   上游克隆钉在 GUI_REF (third_party/), 构建前套用 patches/gui/
-#         全系列补丁; forge 自有模块不进补丁: pkg/peony (桌面透明注入,
+#         全系列补丁; forge 自有模块不进补丁: pkg/background (壁纸契约,
 #         Go) 由 go mod edit 现场接入; src/gui-workshop (Workshop 隔离,
 #         TS) 整体覆盖到源码树对应路径, 上游演进经 UPSTREAM_BASE hash 告警
 # 产物:   out/linux-unpacked/ (electron-builder --dir, 目录形态)
@@ -21,6 +21,9 @@ source ./lib.sh
 init_log gui
 GUI_SRC="$THIRD_PARTY/linux-wallpaperengine-gui"
 
+# kare (V11) 环境: 只读 /usr 上构建前先就位依赖垫片 (非 kare 机器为空操作)
+ensure_dep_shims
+
 # ---- 1. 系统依赖探测 ----
 # GTK 与 libayatana 是托盘/通知的链接期依赖
 log "Probing system dependencies..."
@@ -37,10 +40,15 @@ probe_report
 
 # ---- 2. 源码 + 补丁 + forge overlay ----
 ensure_repo "https://github.com/AzPepoze/linux-wallpaperengine-gui" "$GUI_SRC" "$GUI_REF"
-apply_patches "$GUI_SRC" "$FORGE_DIR/patches/gui"
+# FORGE_SKIP_PATCHES=1 构建无补丁上游 (冒烟/实验用)
+if [ "${FORGE_SKIP_PATCHES:-0}" = "1" ]; then
+	warn "FORGE_SKIP_PATCHES=1 — building UNPATCHED upstream (smoke/experiment build)"
+else
+	apply_patches "$GUI_SRC" "$FORGE_DIR/patches/gui"
+fi
 
 # src/gui-workshop: forge 自有前端源码, 覆盖安装到源码树 (逻辑进自有
-# 源码, 补丁只留 vite 接线 — 与 Go 侧 pkg/peony 同一教义)。每次构建
+# 源码, 补丁只留 vite 接线 — 与 Go 侧 pkg/background 同一教义)。每次构建
 # 无条件覆盖, 端状态确定。
 OVERLAY_DIR="$SRC_DIR/gui-workshop"
 for f in "$OVERLAY_DIR"/*.ts; do
@@ -105,14 +113,14 @@ log "Overriding steamworks native module with local build ..."
 cp "$SWJS_DIST/steamworksjs.linux-x64-gnu.node" "$NODE_SWJS/"
 cp "$SWJS_DIST/libsteam_api.so" "$NODE_SWJS/"
 
-# ---- 6. pkg/peony 模块接线 ----
+# ---- 6. pkg/background 模块接线 ----
 # 本地 replace 由构建脚本现场注入, 不进补丁: apply_patches 每轮把 go.mod
-# 重置回上游, 因此每次构建前重新注入。目标为 forge 自有模块 pkg/peony
+# 重置回上游, 因此每次构建前重新注入。目标为 forge 自有模块 pkg/background
 # (纯 stdlib, 本地目录无需 go.sum)。
-log "Wiring pkg/peony module into GUI go.mod ..."
+log "Wiring pkg/background module into GUI go.mod ..."
 (cd "$GUI_SRC/src/backend" && go mod edit \
-	-require="lwe-forge/pkg/peony@v0.0.0" \
-	-replace="lwe-forge/pkg/peony=$FORGE_DIR/pkg/peony")
+	-require="lwe-forge/pkg/background@v0.0.0" \
+	-replace="lwe-forge/pkg/background=$FORGE_DIR/pkg/background")
 
 # ---- 7. 构建 ----
 # 流水线: tsc 类型门禁 -> Go 后端 (CGO) -> vite 前端 -> electron-builder --dir

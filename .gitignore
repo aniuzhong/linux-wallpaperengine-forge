@@ -2,7 +2,11 @@
 out/
 
 # ---- User-space toolchains (Go / Bun / Rust / CMake / GOPATH, fetched by ensure_*) ----
-toolchains/
+# kare (V11) 环境脚本纳入版本库, 其余 (工具链与垫片产物) 忽略
+toolchains/*
+!toolchains/kare-env.sh
+!toolchains/dep-spec.list
+!toolchains/build-dep-shims.sh
 
 # ---- Upstream checkouts in third_party/ (pinned to specific versions, with their own .git/.gitmodules and CEF cache) ----
 third_party/linux-wallpaperengine
