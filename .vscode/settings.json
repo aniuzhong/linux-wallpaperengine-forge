@@ -1,0 +1,6 @@
+{
+	"cmake.sourceDirectory": "${workspaceFolder}/src/peony-qt-desktop",
+	"cmake.buildDirectory": "${workspaceFolder}/out/vscode/peony-alpha",
+	"cmake.configureOnOpen": true,
+	"C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+}
