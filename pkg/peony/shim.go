@@ -65,3 +65,28 @@ func locateShim() (string, error) {
 	return "", errors.New("libpeony-alpha.so not found (looked in:\n  " + strings.Join(tried, "\n  ") +
 		"\nset " + shimPathEnv + " to override)")
 }
+
+// stageShim 把 shim 库重拷进状态目录 (与 shim 日志同目录, 路径保证无空格),
+// 返回可直接放进 LD_PRELOAD 的路径。ld.so 按空白切分 LD_PRELOAD, 套件装在
+// 含空格的路径下 (如 "Wallpaper Engine/") 时原路径必被拆散, 注入静默失败。
+// 每轮 Attach 重拷, 套件更新自动跟随; 先写临时名再原子改名, 不给加载器留
+// 半成品。源路径本身无空格时这是一次纯冗余的小文件拷贝, 可忽略。
+func stageShim(src string) (string, error) {
+	dst := filepath.Join(filepath.Dir(shimLogPath()), filepath.Base(src))
+	if src == dst {
+		return src, nil
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return "", err
+	}
+	tmp := dst + ".staging"
+	if err := os.WriteFile(tmp, data, 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	return dst, nil
+}

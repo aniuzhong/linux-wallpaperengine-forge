@@ -82,6 +82,12 @@ func Attach() error {
 		logf("attach failed: %v", err)
 		return err
 	}
+	// LD_PRELOAD 里不能有空格 (ld.so 按空白切分), 交给加载器前先转存。
+	if staged, err := stageShim(shimPath); err == nil {
+		shimPath = staged
+	} else {
+		logf("attach: shim staging failed, falling back to %s: %v", shimPath, err)
+	}
 	list, expectNullify, err := wallpaperList()
 	if err != nil {
 		logf("attach failed: %v", err)
