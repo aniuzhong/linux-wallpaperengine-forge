@@ -1,18 +1,9 @@
-# ---- Build outputs and logs (out/build-*.log, out/engine/, out/linux-unpacked/, etc.) ----
+# ---- Build outputs and logs (out/build-*.log, etc.)
 out/
 
-# ---- User-space toolchains (Go / Bun / Rust / CMake / GOPATH, fetched by ensure_*) ----
-toolchains/
-
-# ---- Upstream checkouts in third_party/ (pinned to specific versions, with their own .git/.gitmodules and CEF cache) ----
+# ---- Upstream checkouts in third_party/
 third_party/linux-wallpaperengine
 third_party/linux-wallpaperengine-gui
-third_party/steamworks.js
 
-# ---- Dependencies and intermediate build artifacts (catch-all to keep nested repos from leaking into the main repo) ----
-node_modules/
-build/
-dist/
-
-# ---- Others ----
-.cache/
+# ---- User-space toolchains ----
+toolchains/
