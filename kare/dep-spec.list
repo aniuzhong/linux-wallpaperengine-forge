@@ -10,7 +10,8 @@
 #
 # ---- 引擎 (build-engine.sh 探测清单) ----
 - | libglm-dev |
-- | freeglut3-dev libglu1-mesa-dev |
+# openKylin 的 freeglut3-dev 是空过渡壳 (Depends: libglut-dev), 真文件在后者
+- | libglut-dev freeglut3-dev libglu1-mesa-dev |
 mpv | libmpv-dev | libmpv2 libmpv1
 glfw3 | libglfw3-dev | libglfw3
 glew | libglew-dev | libglew2.2 libglew2.1
@@ -91,6 +92,8 @@ xproto | x11proto-dev |
 libbrotlidec | libbrotli-dev | libbrotli1
 libsharpyuv | libsharpyuv-dev | libsharpyuv0
 libswresample | libswresample-dev | libswresample4 libswresample3
-# ---- 仅头文件 (宿主进程解析 Qt 符号, peony-alpha/探针编译用) ----
-Qt5Core | qtbase5-dev |
-Qt5Gui | qtbase5-dev |
+# glib/gio 闭包 (libglib2.0-dev); 包名以 openKylin 源为准, 与 Debian
+# 常见的 libpcre2-8-dev/libselinux-dev 拆分名不同
+libpcre2-8 | libpcre2-dev | libpcre2-8-0
+libselinux | libselinux1-dev | libselinux1
+shared-mime-info | shared-mime-info |

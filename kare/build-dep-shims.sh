@@ -12,22 +12,37 @@
 # 全程无 root、不写系统目录。
 set -uo pipefail
 
-cd "$(dirname "$0")"
-SHIMS="$PWD/shims"
+# 本脚本住在 kare/ (源码), 产物落在 toolchains/shims/ (可弃缓存);
+# 下载的 .deb 落在垫片目录, 提取后即删, 不污染源码目录
+FORGE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SHIMS="$FORGE_DIR/toolchains/shims"
 ROOT="$SHIMS/root"
-SPEC="$PWD/dep-spec.list"
+SPEC="$FORGE_DIR/kare/dep-spec.list"
 MERGE_USR="/opt/kare-applications/shadow/merge/usr"
 MAX_ROUNDS=10
+mkdir -p "$ROOT"
+cd "$SHIMS"
 
 log() { printf '\033[36m[shims]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[shims]\033[0m %s\n' "$*" >&2; }
 
-export PKG_CONFIG_PATH="$ROOT/usr/lib/x86_64-linux-gnu/pkgconfig:$ROOT/usr/share/pkgconfig:${PKG_CONFIG_PATH:-}"
+# 提取一律用基础系统真 dpkg: PATH 里 merge 树的 dpkg 是 kare wrapper
+# (日志写 /var/log/kare 需 root, 且依赖可能不存在的 /usr/bin/dpkg.real),
+# 会让所有 dpkg -x 静默失败 (症状: "extraction failed" 刷屏, 闭包不收敛)
+DPKG=/usr/bin/dpkg
+[ -x "$DPKG" ] || DPKG="$(command -v dpkg)"
 
-# 根依赖 = 两个构建脚本探测清单的并集 + shim 自身编译所需 (Qt 只取头)
+# 闭包探测只认垫片自身: PKG_CONFIG_LIBDIR 屏蔽 pkg-config 的默认系统
+# 目录, 且不继承环境里的 merge 树路径 —— 否则"机器上已有"会掩盖垫片
+# 缺口 (建垫片时 merge 树装着某包 → 不下载; kare 会话刷新清掉 merge
+# 树后缺口才暴露)。垫片必须自洽, 收敛判定也只在垫片视角下成立。
+export PKG_CONFIG_LIBDIR="$ROOT/usr/lib/x86_64-linux-gnu/pkgconfig:$ROOT/usr/share/pkgconfig"
+export PKG_CONFIG_PATH="$PKG_CONFIG_LIBDIR"
+
+# 根依赖 = 两个构建脚本探测清单的并集
 # wayland-protocols: 引擎 wayland 后端的协议 XML 来源, 不被任何 pc 链引入, 须显式验证
 ROOT_PCS="mpv glfw3 glew sdl2 liblz4 libavcodec libavformat libavutil libswscale libpulse fftw3 dbus-1 gmp egl gl \
-	gtk+-3.0 ayatana-appindicator3-0.1 glib-2.0 Qt5Core Qt5Gui wayland-client wayland-protocols"
+	gtk+-3.0 ayatana-appindicator3-0.1 glib-2.0 wayland-client wayland-protocols"
 
 # ---- 工具函数 ----------------------------------------------------------------
 
@@ -46,7 +61,7 @@ extract_debs() {
 	mkdir -p "$dest"
 	for d in *.deb; do
 		[ -e "$d" ] || continue
-		dpkg -x "$d" "$dest/" || warn "extraction failed: $d"
+		"$DPKG" -x "$d" "$dest/" || warn "extraction failed: $d"
 		rm -f "$d"
 	done
 }
@@ -108,6 +123,21 @@ for round in $(seq 1 $MAX_ROUNDS); do
 done
 pkg-config --exists $ROOT_PCS 2>/dev/null || { warn "closure did not converge:"; pkg-config --errors-to-stdout --print-errors --cflags $ROOT_PCS 2>&1 | head -4; exit 1; }
 
+# ---- ②' 无 pc 的纯头文件包: 闭包循环探测不到, 按 spec 契约显式安装 --------
+# spec 约定 pc 名为 "-" 的行"总是安装" (libglm-dev / freeglut3-dev
+# 这类纯头文件包); 此前未实现, glm 一直靠基础 /usr 的侥幸存在, /usr 视图一翻
+# 转就缺 —— find_package(GLUT) 与 glm include 因此失明
+log "extracting no-pc header packages..."
+while IFS='|' read -r pc devs runs; do
+	case "$pc" in ['#']*|"") continue ;; esac
+	pc=$(echo "$pc" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	[ "$pc" = "-" ] || continue
+	devs=$(echo "$devs" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	[ -n "$devs" ] || continue
+	download_first "$devs" && extract_debs "$ROOT"
+done < "$SPEC"
+normalize
+
 # ---- ② 运行时库: 链接期 .so 符号链接的目标 -----------------------------------
 log "extracting runtime libraries..."
 while IFS='|' read -r pc devs runs; do
@@ -122,8 +152,8 @@ normalize
 # ---- ③ 工具与符号链接修补 -----------------------------------------------------
 # node 别名: 上游 tsc 的 shebang 需要 node; bun 官方支持被链接为 node
 mkdir -p "$SHIMS/usr/bin"
-if [ -x "$PWD/bun/bin/bun" ] && [ ! -e "$SHIMS/usr/bin/node" ]; then
-	ln -s "$PWD/bun/bin/bun" "$SHIMS/usr/bin/node"
+if [ -x "$FORGE_DIR/toolchains/bun/bin/bun" ] && [ ! -e "$SHIMS/usr/bin/node" ]; then
+	ln -s "$FORGE_DIR/toolchains/bun/bin/bun" "$SHIMS/usr/bin/node"
 	log "node alias -> bun"
 fi
 # wayland-scanner: 麒麟藏在 libsdl2-dev 且 /opt/kare/usr/bin 下是 wrapper 脚本,
@@ -136,6 +166,24 @@ if [ ! -x "$SHIMS/usr/bin/wayland-scanner" ]; then
 			break
 		fi
 	done
+fi
+# cmake: merge 树 cmake 会话刷新期可能悬空, 回落到基础系统 cmake 的
+# configure 会静默失败 (无任何报错文本)。垫片自备一份真 cmake, 会话
+# 任何状态下都可用。cmake-data 是独立包 (Modules 全在里面), 缺它则
+# CMAKE_ROOT 报错; 二进制以真实文件落位 (垫片下符号链接 exec 有
+# ENOENT 诡异行为), Modules 留在 root/usr/share, 用 usr/share 目录
+# 链接补齐二进制的 ../share 相对查找
+if [ ! -x "$SHIMS/usr/bin/cmake" ]; then
+	ok=1
+	download_first "cmake" && extract_debs "$ROOT" || ok=0
+	download_first "cmake-data" && extract_debs "$ROOT" || ok=0
+	if [ "$ok" = 1 ] && [ -x "$ROOT/usr/bin/cmake" ] && [ -d "$ROOT/usr/share/cmake-3.28" ]; then
+		cp "$ROOT/usr/bin/cmake" "$SHIMS/usr/bin/cmake"
+		ln -sfn ../root/usr/share "$SHIMS/usr/share"
+		log "cmake ← $ROOT/usr/bin/cmake (+ cmake-data)"
+	else
+		warn "cmake shim unavailable; builds will depend on the merge tree cmake"
+	fi
 fi
 # 断链修补: .so 符号链接目标若不在垫片中, 指向 merge 树的运行时
 while IFS= read -r link; do

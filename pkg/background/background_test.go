@@ -46,7 +46,7 @@ func TestIngestLineDeliversMarkerWithoutParkedReceiver(t *testing.T) {
 	}
 }
 
-// 非 marker 行 (含启动历史回放中的任意行) 不得产生令牌。
+// 非 marker 行不得产生令牌。
 func TestIngestLineIgnoresNonMarkerLines(t *testing.T) {
 	armed(t)
 	for _, line := range []string{
@@ -62,8 +62,7 @@ func TestIngestLineIgnoresNonMarkerLines(t *testing.T) {
 	}
 }
 
-// 无待决代际 (markerWaitChan == nil) 时一切输入都被忽略 —— Subscribe 的
-// 历史回放因此天然无害。
+// 无待决代际 (markerWaitChan == nil) 时一切输入都被忽略。
 func TestIngestLineIgnoresWhenIdle(t *testing.T) {
 	markerMu.Lock()
 	markerWaitChan = nil

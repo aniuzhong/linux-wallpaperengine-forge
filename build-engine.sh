@@ -10,7 +10,7 @@
 #
 # 说明:   首次构建需从 CEF 官方构建源 (spotifycdn, 无国内镜像) 下载约
 #         1GB 分发包; 下载结果常驻 toolchains/cef, 重建构建树时自动预置,
-#         不重复下载。与 build-gui.sh / build-shim.sh 无先后依赖, 可在
+#         不重复下载。与 build-gui.sh 无先后依赖, 可在
 #         独立容器中单独运行。
 #
 set -euo pipefail
@@ -18,19 +18,22 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./lib.sh
 
 init_log engine
+acquire_forge_lock
 ENGINE_SRC="$THIRD_PARTY/linux-wallpaperengine"
 
-# kare (V11) 环境: 只读 /usr 上构建前先就位依赖垫片 (非 kare 机器为空操作)
+# kare 环境: 构建前先就位依赖垫片 (非 kare 机器为空操作)
 ensure_dep_shims
 
 # ---- 1. 系统依赖探测 ----
 # 清单即引擎的全部构建依赖; 只探测并给出安装命令, 不代装。
+# kare 下 dev 头以垫片为准 (CPATH/CMAKE_PREFIX_PATH 只认垫片), 兼容
+# /usr/include 直装宿主, 故头文件探测给出双候选路径。
 log "Probing system dependencies..."
 probe_reset
 check_cmd git git
 check_cmd curl curl
 check_cmd cc build-essential
-check_cmd 'g++' g++
+check_cmd 'g++:c++' g++
 check_cmd pkg-config pkg-config
 check_lib gl libgl-dev
 check_lib xrandr libxrandr-dev
@@ -40,8 +43,7 @@ check_lib xi libxi-dev
 check_lib xxf86vm libxxf86vm-dev
 check_lib xcb-randr libxcb-randr0-dev
 check_lib glew libglew-dev
-# kare 环境机器上 dev 头可能落在 merge 树而非 /usr/include, 多路径命中即可
-check_header "/usr/include/GL/glut.h:/opt/kare-applications/shadow/merge/usr/include/GL/glut.h" freeglut3-dev
+check_header "/usr/include/GL/glut.h:${KARE_SHIMS:-$TOOLCHAINS/shims}/root/usr/include/GL/glut.h" freeglut3-dev
 check_lib sdl2 libsdl2-dev
 check_lib liblz4 liblz4-dev
 check_lib libavcodec libavcodec-dev
@@ -57,7 +59,7 @@ check_lib dbus-1 libdbus-1-dev
 check_lib zlib zlib1g-dev
 check_lib libpng libpng-dev
 check_lib gmp libgmp-dev
-check_header "/usr/include/glm/glm.hpp:/opt/kare-applications/shadow/merge/usr/include/glm/glm.hpp" libglm-dev
+check_header "/usr/include/glm/glm.hpp:${KARE_SHIMS:-$TOOLCHAINS/shims}/root/usr/include/glm/glm.hpp" libglm-dev
 probe_report
 
 # ---- 2. 源码 + 子模块 + 补丁 ----
@@ -72,34 +74,61 @@ else
 fi
 
 # ---- 3. 工具链 ----
-# glslang 子模块要求 cmake >= 3.22, 麒麟系统只有 3.16, 不足时落用户态
+# glslang 子模块要求 cmake >= 3.22, 系统版本不足时落用户态
 ensure_cmake 3.22
 
 # ---- 4. 配置 + 编译 + 安装 ----
 BUILD_DIR="$ENGINE_SRC/build"
 # 引擎产物扁平化: 安装前缀即载荷根 (可重定位, 无 /opt 嵌套)
 PAYLOAD="$OUTPUT/engine"
-
-# CMake 构建树绑定绝对路径, 环境切换 (容器 <-> 宿主机) 后旧缓存不可用;
-# 重建前把 ~1GB 的 CEF 下载抢救进 toolchains/cef, 避免重复下载。
+# CEF 下载缓存: DownloadCEF 见到解压目录即跳过下载, 重建构建树时从这里预置
 CEF_CACHE="$TOOLCHAINS/cef"
-if [ -f "$BUILD_DIR/CMakeCache.txt" ] && ! grep -Fqx "CMAKE_HOME_DIRECTORY:INTERNAL=$ENGINE_SRC" "$BUILD_DIR/CMakeCache.txt"; then
-	warn "Build tree was configured under a different path; recreating it (CEF download cache preserved at $CEF_CACHE)"
+
+# CMake 构建树绑定绝对路径与工具链, 环境切换 (路径变更/编译器失效) 后旧
+# 缓存不可用; 重建前把 ~1GB 的 CEF 下载抢救回 toolchains/cef, 避免重复下载
+recreate_build_tree() {
 	if [ -d "$BUILD_DIR/cef" ]; then
 		rm -rf "$CEF_CACHE"
 		mkdir -p "$CEF_CACHE"
 		cp -al "$BUILD_DIR/cef/." "$CEF_CACHE/" 2>/dev/null || cp -a "$BUILD_DIR/cef/." "$CEF_CACHE/"
 	fi
 	rm -rf "$BUILD_DIR"
+}
+
+if [ -f "$BUILD_DIR/CMakeCache.txt" ] && ! grep -Fqx "CMAKE_HOME_DIRECTORY:INTERNAL=$ENGINE_SRC" "$BUILD_DIR/CMakeCache.txt"; then
+	warn "Build tree was configured under a different path; recreating it (CEF download cache preserved at $CEF_CACHE)"
+	recreate_build_tree
 fi
-# 预置 CEF 缓存: DownloadCEF 见到解压目录即跳过下载
+# 缓存钉死的编译器可能已失效: kare merge 树随会话刷新, 符号链接链
+# (cc → /etc/alternatives/cc → /usr/bin/gcc-12 等) 会短暂或持续悬空,
+# CMake 报 "is not a full path to an existing compiler tool"。让构建树
+# 重新解析而不是带着死路径继续 —— 编译器变更本就需要全量重建。
+_cache_cc=""
+_cache_cxx=""
+if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
+	_cache_cc=$(sed -n 's/^CMAKE_C_COMPILER:FILEPATH=//p' "$BUILD_DIR/CMakeCache.txt" | head -n1)
+	_cache_cxx=$(sed -n 's/^CMAKE_CXX_COMPILER:FILEPATH=//p' "$BUILD_DIR/CMakeCache.txt" | head -n1)
+fi
+_cache_bad=0
+if [ -n "$_cache_cc" ] && ! "$_cache_cc" --version >/dev/null 2>&1; then
+	_cache_bad=1
+fi
+if [ -n "$_cache_cxx" ] && ! "$_cache_cxx" --version >/dev/null 2>&1; then
+	_cache_bad=1
+fi
+if [ "$_cache_bad" = "1" ]; then
+	warn "Build tree cached compiler no longer usable ($_cache_cc / $_cache_cxx); recreating it (CEF download cache preserved at $CEF_CACHE)"
+	recreate_build_tree
+fi
+# 预置 CEF 缓存
 if [ -n "$(ls -A "$CEF_CACHE" 2>/dev/null)" ]; then
 	mkdir -p "$BUILD_DIR/cef"
 	cp -al "$CEF_CACHE/." "$BUILD_DIR/cef/" 2>/dev/null || cp -a "$CEF_CACHE/." "$BUILD_DIR/cef/"
 fi
 
 log "Configuring CMake ..."
-# FORGE_CMAKE_ARGS: 追加 -D 缓存变量 (V11/kare 环境下为 find_path 提供路径提示)
+# FORGE_CMAKE_ARGS: 用户侧钩子, 追加 -D 缓存变量 (kare 的路径提示经
+# CMAKE_PREFIX_PATH 环境变量注入, 见 kare/kare-env.sh)
 cmake -S "$ENGINE_SRC" -B "$BUILD_DIR" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_INSTALL_PREFIX="$PAYLOAD" \
@@ -110,7 +139,6 @@ cmake --build "$BUILD_DIR" -j"$(nproc)"
 log "Installing into $PAYLOAD ..."
 cmake --install "$BUILD_DIR"
 
-# install(TARGETS) 把主程序放在前缀根目录, 与 CEF 运行时同级
 [ -x "$PAYLOAD/linux-wallpaperengine" ] || die "Install finished but linux-wallpaperengine not found in payload"
 
 # ---- 5. 载荷清理: 剔除运行时无关的安装产物 ----

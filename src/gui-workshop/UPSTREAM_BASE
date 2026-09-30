@@ -1,2 +1,0 @@
-cabecf00d33bdd3fd3cc6638ed15f306ce77af91  src/frontend/main/services/workshopService.ts
-# steamworksWorker.ts 为 forge 新增文件, 上游无基线, 不设 hash 告警

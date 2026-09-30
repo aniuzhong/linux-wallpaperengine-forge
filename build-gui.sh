@@ -4,14 +4,13 @@
 #
 # 源码:   上游克隆钉在 GUI_REF (third_party/), 构建前套用 patches/gui/
 #         全系列补丁; forge 自有模块不进补丁: pkg/background (壁纸契约,
-#         Go) 由 go mod edit 现场接入; src/gui-workshop (Workshop 隔离,
-#         TS) 整体覆盖到源码树对应路径, 上游演进经 UPSTREAM_BASE hash 告警
+#         Go) 由 go mod edit 现场接入
 # 产物:   out/linux-unpacked/ (electron-builder --dir, 目录形态)
 # 日志:   out/build-gui.log
 #
 # 说明:   steamworks.js 的 npm 预编译产物对麒麟不可用, 本脚本用用户态
 #         rust 工具链本地重编并覆盖之; 工具链与前端依赖全部走国内镜像,
-#         首次构建较慢。与 build-engine.sh / build-shim.sh 无先后依赖,
+#         首次构建较慢。与 build-engine.sh 无先后依赖,
 #         可在独立容器中单独运行。
 #
 set -euo pipefail
@@ -19,9 +18,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./lib.sh
 
 init_log gui
+acquire_forge_lock
 GUI_SRC="$THIRD_PARTY/linux-wallpaperengine-gui"
 
-# kare (V11) 环境: 只读 /usr 上构建前先就位依赖垫片 (非 kare 机器为空操作)
+# kare 环境: 构建前先就位依赖垫片 (非 kare 机器为空操作)
 ensure_dep_shims
 
 # ---- 1. 系统依赖探测 ----
@@ -38,7 +38,7 @@ check_lib gtk+-3.0 libgtk-3-dev
 check_lib ayatana-appindicator3-0.1 libayatana-appindicator3-dev
 probe_report
 
-# ---- 2. 源码 + 补丁 + forge overlay ----
+# ---- 2. 源码 + 补丁 ----
 ensure_repo "https://github.com/AzPepoze/linux-wallpaperengine-gui" "$GUI_SRC" "$GUI_REF"
 # FORGE_SKIP_PATCHES=1 构建无补丁上游 (冒烟/实验用)
 if [ "${FORGE_SKIP_PATCHES:-0}" = "1" ]; then
@@ -46,28 +46,6 @@ if [ "${FORGE_SKIP_PATCHES:-0}" = "1" ]; then
 else
 	apply_patches "$GUI_SRC" "$FORGE_DIR/patches/gui"
 fi
-
-# src/gui-workshop: forge 自有前端源码, 覆盖安装到源码树 (逻辑进自有
-# 源码, 补丁只留 vite 接线 — 与 Go 侧 pkg/background 同一教义)。每次构建
-# 无条件覆盖, 端状态确定。
-OVERLAY_DIR="$SRC_DIR/gui-workshop"
-for f in "$OVERLAY_DIR"/*.ts; do
-	name=$(basename "$f")
-	cp -f "$f" "$GUI_SRC/src/frontend/main/services/$name"
-	log "Overlay: src/frontend/main/services/$name <- src/gui-workshop/"
-done
-# 上游演进告警: overlay 覆盖上游同路径文件会遮蔽上游改动, UPSTREAM_BASE
-# 记录 overlay 所基于的上游 blob hash, 不一致即显性提醒对照合并
-while read -r hash path; do
-	case "$hash" in \#*|"") continue ;; esac
-	[ -n "$path" ] || continue
-	cur=$(git -C "$GUI_SRC" rev-parse "HEAD:$path" 2>/dev/null || echo "")
-	if [ -n "$cur" ] && [ "$cur" != "$hash" ]; then
-		warn "Upstream file evolved since overlay was authored: $path"
-		warn "  overlay base: $hash / pinned HEAD: $cur"
-		warn "  review and merge upstream changes into src/gui-workshop/"
-	fi
-done < "$OVERLAY_DIR/UPSTREAM_BASE"
 
 # ---- 3. 工具链 ----
 # Go 版本取自后端 go.mod, 与上游声明保持一致; bun/rust 落用户态 toolchains/

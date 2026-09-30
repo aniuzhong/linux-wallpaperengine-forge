@@ -13,6 +13,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./lib.sh
 
 init_log package
+acquire_forge_lock
 
 GUI_PAYLOAD="$OUTPUT/linux-unpacked"
 ENG_PAYLOAD="$OUTPUT/engine"

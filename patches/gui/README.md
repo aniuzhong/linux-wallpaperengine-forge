@@ -14,18 +14,6 @@
 
 ## 逻辑补丁清单
 
-### 001 — Workshop 移入 utilityProcess (仅 vite 接线)
-
-Valve 的 breakpad 崩溃钩子只应存在于独立进程。本补丁只剩
-`vite.config.ts` 一处: main 入口扩为 `[main.ts, steamworksWorker.ts]`
-双入口。实现全部在 forge 自有源码 `src/gui-workshop/`
-(`steamworksWorker.ts` worker 进程 + `workshopService.ts` 覆盖上游,
-经 JSON RPC `init`/`call` → `ready`/`result` 通信, 工坊崩溃不波及 UI,
-worker 死亡时优雅降级), 由 build-gui.sh 构建期覆盖安装, 上游演进经
-`UPSTREAM_BASE` hash 告警。历史教训: 早期版本以 700+ 行补丁形态携带
-全部逻辑, 手工改 diff 产生过 7 个静默缺陷 (未定义类名/常量/方法),
-esbuild 不做类型检查全部放行 —— 这正是该逻辑迁出自补丁的原因。
-
 ### 002 — V11 壁纸契约接线 (pkg/background)
 
 `app.go` 接线: 导入 pkg/background; 启动时 `Prepare()` (备份壁纸指针并
@@ -36,8 +24,3 @@ peony, 图标层抬回引擎上方); `Cleanup()` 里 `Detach()` 还原用户壁�
 契约逻辑全部在 forge 自有模块 `pkg/background`, 这里只有接线。另将
 config.go 默认 `Layer` 从 `bottom` 改为 `background`。
 
-### 003 — 日志历史回放
-
-`logger` 增加一个 500 条的有界环形历史, `Subscribe()` 订阅时先回放再
-直播: 日志页晚于后端启动打开时, 也能看到启动期的日志 (应用初始化、
-壁纸启动、`[inject]` 注入流), 而不是只剩订阅之后的行。

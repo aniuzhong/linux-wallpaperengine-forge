@@ -4,12 +4,13 @@
 // 图标; 引擎同样挂 background 层, 同层内后映射者居上。方案:
 //
 //	Prepare : 备份用户壁纸三元组 → gsettings 指向全透明 PNG → peony 重绘
-//	Reorder : peony-qt-desktop -u —— 令 peony 表面重建, 图标层抬回引擎上方
+//	Reorder : 重启 peony 进程 —— 表面重建后居后映射位置, 图标层抬回引擎上方
+//	          (-u 只重绘背景内容, 不重建 Wayland 表面, 做不到层序修正)
 //	Detach  : 还原用户壁纸
 //
-// 零注入: 与 peony 的全部交互是 gsettings 键与 -u 命令行, 均为公开契约。
-// 引擎时序由 WatchEngine 驱动 (进程出现 → 延时 → Reorder), 对 GUI 上游
-// 代码零侵入。
+// 零注入: 与 peony 的全部交互是 gsettings 键与命令行, 均为公开契约。
+// 引擎时序由 WatchEngine 驱动 (引擎出现 → 映射标记 → Reorder), 对 GUI
+// 上游代码零侵入。
 package background
 
 import (
@@ -238,7 +239,7 @@ func restartPeony() error {
 	return errors.New("peony did not come back within " + peonyRespawnTimeout.String())
 }
 
-// engineRunning 扫描 /proc, 按 exe 符号链接的基名精确匹配引擎二进制。
+// enginePIDs 扫描 /proc, 按 exe 符号链接的基名精确匹配引擎二进制。
 // 不能用 pgrep -f: 引擎名是 GUI/后端进程名的前缀 (linux-wallpaperengine-gui),
 // 命令行匹配会把 GUI 自己也算成引擎, 导致"引擎从无到有"的跳变永远检测不到,
 // 切换壁纸后的 reorder 便永不触发。
@@ -271,10 +272,6 @@ func enginePIDs(names []string) map[int]bool {
 	return pids
 }
 
-func engineRunning(names []string) bool {
-	return len(enginePIDs(names)) > 0
-}
-
 // ---- 确定性时序: 表面映射标记驱动 ---------------------------------------------
 //
 // 引擎 (0002-wayland-map-log 补丁) 在 layer surface ack_configure 时向
@@ -294,11 +291,10 @@ var (
 func SetDebugLogf(f func(string, ...any)) { debugLogf = f }
 
 // IngestLine 供宿主把 GUI logger 的广播行喂进来 (logger.Subscribe 的
-// 转发协程)。只消费 mappedMarker, 且仅在等待标记的代际内生效 ——
-// Subscribe 启动时的历史回放因此天然被忽略。
+// 转发协程)。只消费 mappedMarker, 且仅在等待标记的代际内生效。
 //
 // 切勿对任意行 debugLog: 出口即 logger, logger 再喂回本函数会形成
-// ingest → log → ingest 自激递归, 瞬间灌满 500 条历史环形缓冲并烧 CPU
+// ingest → log → ingest 自激递归, 日志流被嵌套垃圾瞬间打满并烧 CPU
 // (实测后端 CPU 90%+, 日志页/日志 socket 全被嵌套垃圾淹没)。
 func IngestLine(line string) {
 	markerMu.Lock()
@@ -334,10 +330,10 @@ func WatchEngine(engineNames []string, logf func(string, ...any)) {
 		generationChanged := len(cur) > 0 && !maps.Equal(cur, prev)
 		if generationChanged {
 			markerMu.Lock()
-			markerWaitChan = make(chan struct{}, 1) // 容量 1: 令牌在接收侧轮询间隙暂存
+			markerWaitChan = make(chan struct{}, 1)
 			markerMu.Unlock()
 
-			deadline := time.After(60 * time.Second) // 映射超时的代际放弃线
+			deadline := time.After(60 * time.Second)
 			waiting := true
 			for waiting {
 				select {

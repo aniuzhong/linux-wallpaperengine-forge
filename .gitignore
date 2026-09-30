@@ -1,12 +1,8 @@
 # ---- Build outputs and logs (out/build-*.log, out/engine/, out/linux-unpacked/, etc.) ----
 out/
 
-# ---- User-space toolchains (Go / Bun / Rust / CMake / GOPATH, fetched by ensure_*) ----
-# kare (V11) 环境脚本纳入版本库, 其余 (工具链与垫片产物) 忽略
+# ---- Toolchain and shim artifacts (Go / Bun / Rust / CMake / shims, fetched or built by ensure_*/kare) ----
 toolchains/*
-!toolchains/kare-env.sh
-!toolchains/dep-spec.list
-!toolchains/build-dep-shims.sh
 
 # ---- Upstream checkouts in third_party/ (pinned to specific versions, with their own .git/.gitmodules and CEF cache) ----
 third_party/linux-wallpaperengine
@@ -20,3 +16,4 @@ dist/
 
 # ---- Others ----
 .cache/
+.forge-build.lock

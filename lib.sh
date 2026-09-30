@@ -3,11 +3,11 @@
 # 被 build-*.sh source，不直接执行。
 #
 # 布局约定 (按所有权划分):
-#   src/           forge 自有源码 (TS: gui-workshop; C++: peony-qt-desktop)
-#   pkg/           forge 自有 Go 模块 (peony, 经 go.mod replace 接入)
+#   pkg/           forge 自有 Go 模块 (background=v11 壁纸契约接线)
+#   kare/          kare (V11) 环境子系统源码 (检测/垫片构建/依赖声明)
 #   third_party/   上游克隆 (钉住版本, 含各自构建缓存; 勿直接修改,
 #                  ensure_repo 会 checkout -f 冲掉)
-#   toolchains/    用户态工具链 (go / bun / rust / cmake) 与大文件缓存 (cef)
+#   toolchains/    工具链与垫片产物 (go/bun/rust/cmake/cef/shims, 可弃缓存)
 #   patches/       forge 对 third_party 克隆的差异补丁 (条目说明见
 #                  patches/*/README.md)
 #   out/           产物与日志 (build-<目标>.log)
@@ -19,7 +19,6 @@ BUN_VERSION="${BUN_VERSION:-1.4.2}"
 CMAKE_VERSION="${CMAKE_VERSION:-4.4.3}"
 
 FORGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$FORGE_DIR/src"
 THIRD_PARTY="$FORGE_DIR/third_party"
 TOOLCHAINS="$FORGE_DIR/toolchains"
 OUTPUT="$FORGE_DIR/out"
@@ -44,6 +43,18 @@ CMAKE_URLS=(
 log() { printf '\033[32m[%s]\033[0m %s\n' "${LOG_TAG:-build}" "$*"; }
 warn() { printf '\033[33m[%s]\033[0m %s\n' "${LOG_TAG:-build}" "$*" >&2; }
 die() { printf '\033[31m[%s]\033[0m %s\n' "${LOG_TAG:-build}" "$*" >&2; exit 1; }
+
+# ---- 并发防护 ------------------------------------------------------------------
+# 所有入口共享同一份源码树补丁状态 (apply_patches 每轮 git checkout 重置)、
+# 垫片与 third_party 的 build/ 目录, 两个终端同时构建会互相踩出随机的
+# 半途失败 (症状: configure 末尾报错, 换个终端又能过, 无法复现)。
+# flock 串行化: 拿不到锁就明确拒绝; 锁随进程退出自动释放, 含异常与 kill。
+acquire_forge_lock() {
+	exec 9>"$FORGE_DIR/.forge-build.lock"
+	if ! flock -n 9; then
+		die "Another build/package process is running (lock: $FORGE_DIR/.forge-build.lock) — wait for it to finish and retry"
+	fi
+}
 
 # 每个入口调用一次:日志写入 out/build-<目标>.log,同时在终端显示
 init_log() {
@@ -120,11 +131,20 @@ probe_reset() {
 	PROBE_NO_PC=0
 }
 
-check_cmd() { # <命令> <提供的软件包>
-	if ! command -v "$1" >/dev/null 2>&1; then
-		warn "Missing command: $1 (package: $2)"
-		PROBE_MISSING+=("$2")
-	fi
+check_cmd() { # <命令[:备选命令...]> <提供的软件包>
+	# 多候选: 冒号分隔, 命中任一即通过 (kare 会话刷新期 merge 树工具
+	# 可能悬空, 基础系统候选可回落, 如 g++:c++)
+	local c oldIFS=$IFS
+	IFS=:
+	for c in $1; do
+		if command -v "$c" >/dev/null 2>&1; then
+			IFS=$oldIFS
+			return 0
+		fi
+	done
+	IFS=$oldIFS
+	warn "Missing command: $1 (package: $2)"
+	PROBE_MISSING+=("$2")
 }
 
 check_lib() { # <pkg-config模块> <提供的软件包>
@@ -264,6 +284,6 @@ ensure_cmake() {
 }
 
 # ---- kare (V11 磐石) 环境挂钩 -------------------------------------------------
-# 只读 /usr 上自动启用依赖垫片与规范环境; 常规宿主自动旁路 (空操作)。
-# 检测与导出逻辑见 toolchains/kare-env.sh, 依赖清单见 toolchains/dep-spec.list
-source "$FORGE_DIR/toolchains/kare-env.sh"
+# kare 机器 (merge 树存在) 自动启用依赖垫片与规范环境; 常规宿主自动旁路
+# (空操作)。检测与导出逻辑见 kare/kare-env.sh, 依赖清单见 kare/dep-spec.list
+source "$FORGE_DIR/kare/kare-env.sh"
