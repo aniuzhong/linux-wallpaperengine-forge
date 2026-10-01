@@ -1,0 +1,132 @@
+diff --git a/src/WallpaperEngine/Render/CWallpaper.cpp b/src/WallpaperEngine/Render/CWallpaper.cpp
+index d0f7eab..4a597d1 100644
+--- a/src/WallpaperEngine/Render/CWallpaper.cpp
++++ b/src/WallpaperEngine/Render/CWallpaper.cpp
+@@ -110,10 +110,16 @@ void CWallpaper::setupShaders () {
+     sourcePointer = "#version 330\n"
+ 		    "precision highp float;\n"
+ 		    "uniform sampler2D g_Texture0;\n"
++		    "uniform bool g_NearestUpscale;\n"
+ 		    "in vec2 v_TexCoord;\n"
+ 		    "out vec4 out_FragColor;\n"
+ 		    "void main () {\n"
+-		    "out_FragColor = texture (g_Texture0, v_TexCoord);\n"
++		    "vec2 uv = v_TexCoord;\n"
++		    "if (g_NearestUpscale) {\n"
++		    "vec2 ts = vec2 (textureSize (g_Texture0, 0));\n"
++		    "uv = (floor (uv * ts) + 0.5) / ts;\n"
++		    "}\n"
++		    "out_FragColor = texture (g_Texture0, uv);\n"
+ 		    "}";
+ 
+     glShaderSource (fragmentShaderID, 1, &sourcePointer, nullptr);
+@@ -176,10 +182,13 @@ void CWallpaper::setupShaders () {
+ 
+     // get textures
+     this->g_Texture0 = glGetUniformLocation (this->m_shader, "g_Texture0");
++    this->g_NearestUpscale = glGetUniformLocation (this->m_shader, "g_NearestUpscale");
+     this->a_Position = glGetAttribLocation (this->m_shader, "a_Position");
+     this->a_TexCoord = glGetAttribLocation (this->m_shader, "a_TexCoord");
+ }
+ 
++void CWallpaper::setUpscaleNearest (bool enabled) { this->m_nearestUpscale = enabled; }
++
+ void CWallpaper::setDestinationFramebuffer (GLuint framebuffer) { this->m_destFramebuffer = framebuffer; }
+ 
+ void CWallpaper::setSpanInfo (const SpanInfo& spanInfo) { this->m_spanInfo = spanInfo; }
+@@ -298,6 +307,7 @@ void CWallpaper::render (
+     glVertexAttribPointer (this->a_Position, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+ 
+     glUniform1i (this->g_Texture0, 0);
++    glUniform1i (this->g_NearestUpscale, this->m_nearestUpscale ? 1 : 0);
+     // write the framebuffer as is to the screen
+     glBindBuffer (GL_ARRAY_BUFFER, this->m_texCoordBuffer);
+     glDrawArrays (GL_TRIANGLES, 0, 6);
+diff --git a/src/WallpaperEngine/Render/CWallpaper.h b/src/WallpaperEngine/Render/CWallpaper.h
+index 87b2b07..a73676a 100644
+--- a/src/WallpaperEngine/Render/CWallpaper.h
++++ b/src/WallpaperEngine/Render/CWallpaper.h
+@@ -159,6 +159,8 @@ protected:
+      */
+     void setupFramebuffers ();
+ 
++    void setUpscaleNearest (bool enabled);
++
+     const Wallpaper& m_wallpaperData;
+ 
+     [[nodiscard]] const Wallpaper& getWallpaperData () const;
+@@ -166,6 +168,9 @@ protected:
+     /** The FBO used for scene output */
+     std::shared_ptr<const CFBO> m_sceneFBO = nullptr;
+ 
++    /** Whether the output upscale must snap UVs to source texels */
++    bool m_nearestUpscale = false;
++
+     GLuint m_vaoBuffer = GL_NONE;
+ 
+ private:
+@@ -175,6 +180,7 @@ private:
+     GLuint m_shader = GL_NONE;
+     // shader variables
+     GLint g_Texture0 = GL_NONE;
++    GLint g_NearestUpscale = GL_NONE;
+     GLint a_Position = GL_NONE;
+     GLint a_TexCoord = GL_NONE;
+     /** The framebuffer to draw the background to */
+diff --git a/src/WallpaperEngine/Render/Wallpapers/CScene.cpp b/src/WallpaperEngine/Render/Wallpapers/CScene.cpp
+index 4933440..a2ea4de 100644
+--- a/src/WallpaperEngine/Render/Wallpapers/CScene.cpp
++++ b/src/WallpaperEngine/Render/Wallpapers/CScene.cpp
+@@ -100,6 +100,13 @@ CScene::CScene (
+ 	this->addObjectToRenderOrder (*object);
+     }
+ 
++    // a NoInterpolation texture covering the whole scene marks a pixel-art
++    // wallpaper: the design-resolution scene FBO has to reach the screen
++    // through nearest-neighbor sampling, or the final upscale blurs it
++    if (this->detectNearestUpscale ()) {
++	this->setUpscaleNearest (true);
++    }
++
+     // create extra framebuffers for the bloom effect
+     this->_rt_4FrameBuffer = this->create (
+ 	"_rt_4FrameBuffer", TextureFormat_ARGB8888, TextureFlags_ClampUVs, 1.0, { sceneWidth / 4, sceneHeight / 4 },
+@@ -297,6 +304,26 @@ void CScene::addObjectToRenderOrder (const Object& object) {
+ ScriptEngine& CScene::getScriptEngine () const { return *this->m_scriptEngine; }
+ Camera& CScene::getCamera () const { return *this->m_camera; }
+ 
++bool CScene::detectNearestUpscale () const {
++    for (const auto& cur : this->m_objectsByRenderOrder) {
++	if (!cur->is<Objects::CImage> ()) {
++	    continue;
++	}
++
++	const Objects::CImage* image = cur->as<Objects::CImage> ();
++	if (image->getTexture () == nullptr || !(image->getTexture ()->getFlags () & TextureFlags_NoInterpolation)) {
++	    continue;
++	}
++
++	const glm::vec2 size = image->getSize ();
++	if (size.x >= static_cast<float> (this->getWidth ()) && size.y >= static_cast<float> (this->getHeight ())) {
++	    return true;
++	}
++    }
++
++    return false;
++}
++
+ void CScene::renderFrame (const glm::ivec4& viewport) {
+     // ensure the virtual mouse position is up to date
+     this->updateMouse (viewport);
+diff --git a/src/WallpaperEngine/Render/Wallpapers/CScene.h b/src/WallpaperEngine/Render/Wallpapers/CScene.h
+index 9e12f3f..feb97d1 100644
+--- a/src/WallpaperEngine/Render/Wallpapers/CScene.h
++++ b/src/WallpaperEngine/Render/Wallpapers/CScene.h
+@@ -55,6 +55,7 @@ private:
+     Render::CObject* createObject (const Object& object);
+     Render::CObject* dispatchObjectType (const Object& object);
+     void addObjectToRenderOrder (const Object& object);
++    bool detectNearestUpscale () const;
+ 
+     std::unique_ptr<Scripting::ScriptEngine> m_scriptEngine;
+     std::unique_ptr<Camera> m_camera;
