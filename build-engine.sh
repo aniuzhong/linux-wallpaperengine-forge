@@ -3,8 +3,8 @@
 # build-engine.sh — build the linux-wallpaperengine engine (Ubuntu 26.04 / amd64)
 #
 # Source:  upstream clone pinned at ENGINE_REF (third_party/), with
-#          patches/engine/ applied on top (0002 desktop-layer window, the only
-#          default patch)
+#          patches/engine/ applied on top (seven required patches as of
+#          2026-10, see patches/engine/README.md)
 # Output:  out/engine/ (flat payload: install prefix == payload root, engine
 #          binary next to the CEF runtime, shipped with the suite)
 # Log:     out/build-engine.log

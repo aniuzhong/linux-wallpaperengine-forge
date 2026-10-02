@@ -61,6 +61,13 @@ install -m 644 "$FORGE_DIR/packaging/README.md"  "$STAGE/README.md"
 	echo "engine : ref $ENGINE_REF"
 	echo "patches:"
 	for p in "$FORGE_DIR"/patches/engine/*.patch; do echo "  engine/$(basename "$p")"; done
+	# enabled optional patches, in enabled-file order
+	if [ -f "$FORGE_DIR/patches/engine/optional/enabled" ]; then
+		while IFS= read -r name; do
+			case "$name" in ''|'#'*) continue ;; esac
+			echo "  engine/optional/$name (enabled)"
+		done < "$FORGE_DIR/patches/engine/optional/enabled"
+	fi
 	echo "extension: wallpaper-sink (GNOME 50 Wayland icon-layer arbitration)"
 	echo "built  : $(date '+%F %T %Z')"
 } > "$STAGE/VERSION"

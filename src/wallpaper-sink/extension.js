@@ -1,7 +1,7 @@
 // wallpaper-sink@lwe-forge v4 — GNOME 50 Wayland desktop-integration arbiter.
 //
 // Layer semantics (measured on mutter 50, Meta.StackLayer): DESKTOP=0 <
-// BOTTOM=1 < NORMAL=2. The engine (X11 desktop window, patch 0002) lands in
+// BOTTOM=1 < NORMAL=2. The engine (X11 desktop window, patch 0001) lands in
 // BOTTOM; GNOME 50's DING icons (Wayland) enter the lower DESKTOP layer via
 // set_type(DESKTOP) and keep self-lowering — left alone, icons sit forever
 // under the wallpaper. X11 windows cannot enter DESKTOP, so the only way out

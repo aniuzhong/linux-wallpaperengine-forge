@@ -2,7 +2,7 @@
 # Engine entry wrapper: forces the engine to run as an Xwayland client on
 # GNOME Wayland sessions. mutter does not implement wlr-layer-shell, so the
 # engine's built-in Wayland driver always fails ("Failed to bind to required
-# interfaces"); the desktop-layer window path is X11 (patch 0002), and the
+# interfaces"); the desktop-layer window path is X11 (patch 0001), and the
 # window-layer arbitration is done by the wallpaper-sink extension.
 # The GUI resolves the engine by name and lands here; the environment is
 # fixed at this boundary.

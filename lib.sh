@@ -58,17 +58,26 @@ ensure_repo() {
 # Reapplies all patches from a clean baseline (git HEAD) on every run: applying
 # is transient, the end state deterministic, with no reliance on traces of a
 # previous run — skip-if-applied detection breaks when patch contexts overlap.
+#
+# Required patches: "$dir"/*.patch, applied in filename order.
+# Optional patches: "$dir/optional/*.patch" are NOT applied unless listed in
+# "$dir/optional/enabled" (one filename per line, line order = apply order,
+# '#' comments allowed); they are applied AFTER the required set, so they
+# must be maintained against the post-required tree.
 apply_patches() {
 	local repo="$1" dir="$2" patch name f
+	# nullglob early: the newfiles scan and the optional/enabled loop both glob
+	# directories that may legitimately be empty (e.g. optional/ with no patches)
+	shopt -s nullglob
 	git -C "$repo" checkout -- . 2>/dev/null || true
 	# Remove files a patch would create (leftovers from the last run), else
 	# git apply fails on "already exists"
 	local newfiles
-	newfiles=$(awk '/^--- \/dev\/null$/{nl=1; next} nl==1 && /^\+\+\+ b\//{sub(/^\+\+\+ b\//, ""); print; nl=0; next} {nl=0}' "$dir"/*.patch 2>/dev/null | sort -u)
+	newfiles=$(awk '/^--- \/dev\/null$/{nl=1; next} nl==1 && /^\+\+\+ b\//{sub(/^\+\+\+ b\//, ""); print; nl=0; next} {nl=0}' \
+		"$dir"/*.patch "$dir"/optional/*.patch 2>/dev/null | sort -u)
 	for f in $newfiles; do
 		rm -f "$repo/$f"
 	done
-	shopt -s nullglob
 	for patch in "$dir"/*.patch; do
 		name=$(basename "$patch")
 		if (cd "$repo" && git apply --check "$patch" 2>/dev/null); then
@@ -78,6 +87,21 @@ apply_patches() {
 			die "Cannot apply patch (upstream may have moved): $patch"
 		fi
 	done
+	# optional patches, enabled via optional/enabled (checked in, keeps builds reproducible)
+	local optdir="$dir/optional"
+	if [ -d "$optdir" ] && [ -f "$optdir/enabled" ]; then
+		while IFS= read -r name; do
+			case "$name" in ''|'#'*) continue ;; esac
+			patch="$optdir/$name"
+			[ -f "$patch" ] || die "Enabled optional patch not found: $patch"
+			if (cd "$repo" && git apply --check "$patch" 2>/dev/null); then
+				(cd "$repo" && git apply "$patch")
+				log "Applying optional patch: $name"
+			else
+				die "Cannot apply optional patch (maintain it against the post-required tree): $patch"
+			fi
+		done < "$optdir/enabled"
+	fi
 	# Unset nullglob before returning: this file is sourced, a leak would change
 	# all later globbing (empty matches expand to nothing, not the literal pattern)
 	shopt -u nullglob

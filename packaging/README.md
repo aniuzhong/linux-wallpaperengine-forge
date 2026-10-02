@@ -42,7 +42,7 @@ VERSION           成分表 (组件版本与补丁清单)
 
 GNOME 50 下没有现成的动态壁纸挂点,本套件用三个部件拼出集成:
 
-1. **引擎 (0002 补丁)** 把自身窗口提升为 X11 桌面层窗口
+1. **引擎 (0001 补丁)** 把自身窗口提升为 X11 桌面层窗口
    (`_NET_WM_WINDOW_TYPE_DESKTOP`),经 Xwayland 渲染。mutter 50 将 X11
    桌面窗口固定分配在 `BOTTOM` 渲染层;
 2. **wallpaper-sink 扩展** 把 DING 桌面图标窗口 (Wayland, 占用更低的
