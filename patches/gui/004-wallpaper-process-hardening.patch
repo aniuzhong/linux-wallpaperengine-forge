@@ -1,0 +1,214 @@
+diff --git a/src/backend/internal/logger/logger.go b/src/backend/internal/logger/logger.go
+index 8a89c6e..73c9a22 100644
+--- a/src/backend/internal/logger/logger.go
++++ b/src/backend/internal/logger/logger.go
+@@ -3,6 +3,7 @@ package logger
+ import (
+ 	"fmt"
+ 	"log"
++	"os"
+ 	"regexp"
+ 	"strings"
+ 	"sync"
+@@ -76,10 +77,43 @@ func Println(v ...interface{}) {
+ 
+ func WallpaperLog(screen, msg string) {
+ 	formatted := fmt.Sprintf("%s%s: %s%s", colorCyan, screen, msg, colorReset)
++	teeWallpaperLog(screen, msg)
+ 	// We don't print wallpaper logs to backend console to avoid noise
+ 	broadcast("wallpaper", formatted)
+ }
+ 
++var (
++	wallpaperLogMu    sync.Mutex
++	wallpaperLogFiles = map[string]*log.Logger{}
++)
++
++func wallpaperLogPath(screen string) string {
++	safe := strings.Map(func(r rune) rune {
++		switch {
++		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
++			r == '-', r == '_', r == '.':
++			return r
++		}
++		return '-'
++	}, screen)
++	return "/tmp/lwe-forge-engine-" + safe + ".log"
++}
++
++func teeWallpaperLog(screen, msg string) {
++	wallpaperLogMu.Lock()
++	defer wallpaperLogMu.Unlock()
++	writer, exists := wallpaperLogFiles[screen]
++	if !exists {
++		file, err := os.OpenFile(wallpaperLogPath(screen), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
++		if err != nil {
++			return
++		}
++		writer = log.New(file, "", log.LstdFlags)
++		wallpaperLogFiles[screen] = writer
++	}
++	writer.Printf("%s: %s", screen, msg)
++}
++
+ func ElectronLog(msg string) {
+ 	// Strip redundant frontend timestamps and prefixes
+ 	msg = frontendLogRegex.ReplaceAllString(msg, "")
+diff --git a/src/backend/internal/platform/process/manager.go b/src/backend/internal/platform/process/manager.go
+index 52579fe..8f0dd9c 100644
+--- a/src/backend/internal/platform/process/manager.go
++++ b/src/backend/internal/platform/process/manager.go
+@@ -3,17 +3,26 @@ package process
+ import (
+ 	"bufio"
+ 	"io"
++	"os"
+ 	"os/exec"
++	"path/filepath"
++	"strconv"
+ 	"strings"
+ 	"sync"
+ 	"syscall"
++	"time"
+ 
+ 	"linux-wallpaperengine-gui/src/backend/internal/logger"
+ )
+ 
++const engineBinaryName = "linux-wallpaperengine"
++
++const killGracePeriod = 3 * time.Second
++
+ type ActiveWallpaper struct {
+ 	Cmd     *exec.Cmd
+ 	Command string
++	done chan struct{}
+ }
+ 
+ type Manager struct {
+@@ -36,6 +45,8 @@ func (manager *Manager) UpdateWallpapers(desiredWallpapers []struct {
+ 	manager.mutex.Lock()
+ 	defer manager.mutex.Unlock()
+ 
++	manager.reapOrphanEngines()
++
+ 	desiredScreens := make(map[string]bool)
+ 	for _, desiredWallpaper := range desiredWallpapers {
+ 		desiredScreens[desiredWallpaper.Screen] = true
+@@ -76,21 +87,81 @@ func (manager *Manager) killWallpaperInternal(screen string) {
+ 
+ 	logger.Printf("Killing wallpaper for %s", screen)
+ 	if active.Cmd.Process != nil {
+-		// Try to kill process group
+-		processGroupID, err := syscall.Getpgid(active.Cmd.Process.Pid)
+-		if err == nil {
+-			if err := syscall.Kill(-processGroupID, syscall.SIGTERM); err != nil {
+-				logger.Printf("Error killing process group: %v", err)
+-			}
+-		} else {
+-			if err := active.Cmd.Process.Kill(); err != nil {
+-				logger.Printf("Error killing process: %v", err)
+-			}
+-		}
++		stopWallpaperProcess(active)
+ 	}
+ 	delete(manager.activeWallpapers, screen)
+ }
+ 
++func stopWallpaperProcess(active *ActiveWallpaper) {
++	pid := active.Cmd.Process.Pid
++	signalProcessGroup(pid, syscall.SIGTERM)
++	if waitExit(active, killGracePeriod) {
++		return
++	}
++	logger.Printf("Wallpaper pid %d survived SIGTERM (%v grace), escalating to SIGKILL", pid, killGracePeriod)
++	signalProcessGroup(pid, syscall.SIGKILL)
++	if !waitExit(active, killGracePeriod) {
++		logger.Printf("Wallpaper pid %d still alive after SIGKILL", pid)
++	}
++}
++
++func waitExit(active *ActiveWallpaper, timeout time.Duration) bool {
++	select {
++	case <-active.done:
++		return true
++	case <-time.After(timeout):
++		return false
++	}
++}
++
++func signalProcessGroup(pid int, sig syscall.Signal) {
++	if pgid, err := syscall.Getpgid(pid); err == nil {
++		if err := syscall.Kill(-pgid, sig); err == nil {
++			return
++		}
++	}
++	_ = syscall.Kill(pid, sig)
++}
++
++func (manager *Manager) reapOrphanEngines() {
++	tracked := make(map[int]bool, len(manager.activeWallpapers))
++	for _, active := range manager.activeWallpapers {
++		if active.Cmd.Process != nil {
++			tracked[active.Cmd.Process.Pid] = true
++		}
++	}
++	for _, pid := range findEnginePids() {
++		if tracked[pid] {
++			continue
++		}
++		logger.Printf("Reaping orphan wallpaper engine pid %d", pid)
++		_ = syscall.Kill(pid, syscall.SIGKILL)
++	}
++}
++
++func findEnginePids() []int {
++	var pids []int
++	entries, err := os.ReadDir("/proc")
++	if err != nil {
++		return nil
++	}
++	for _, entry := range entries {
++		pid, err := strconv.Atoi(entry.Name())
++		if err != nil {
++			continue
++		}
++		cmdline, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
++		if err != nil || len(cmdline) == 0 {
++			continue
++		}
++		fields := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
++		if filepath.Base(fields[0]) == engineBinaryName {
++			pids = append(pids, pid)
++		}
++	}
++	return pids
++}
++
+ func (manager *Manager) KillByFolderName(folderName string) {
+ 	manager.mutex.Lock()
+ 	defer manager.mutex.Unlock()
+@@ -115,10 +186,12 @@ func (manager *Manager) spawnWallpaper(screen string, execPath string, args []st
+ 		return
+ 	}
+ 
+-	manager.activeWallpapers[screen] = &ActiveWallpaper{
++	active := &ActiveWallpaper{
+ 		Cmd:     command,
+ 		Command: fullCommand,
++		done:    make(chan struct{}),
+ 	}
++	manager.activeWallpapers[screen] = active
+ 
+ 	// Handle stdout
+ 	go manager.captureOutput(screen, stdout)
+@@ -129,8 +202,9 @@ func (manager *Manager) spawnWallpaper(screen string, execPath string, args []st
+ 		if err := command.Wait(); err != nil {
+ 			logger.Printf("Wallpaper process for %s exited with error: %v", screen, err)
+ 		}
++		close(active.done)
+ 		manager.mutex.Lock()
+-		if active, exists := manager.activeWallpapers[screen]; exists && active.Cmd == command {
++		if tracked, exists := manager.activeWallpapers[screen]; exists && tracked.Cmd == command {
+ 			delete(manager.activeWallpapers, screen)
+ 		}
+ 		manager.mutex.Unlock()

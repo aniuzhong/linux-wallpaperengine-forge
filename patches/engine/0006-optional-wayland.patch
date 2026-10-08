@@ -1,8 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index c74fdf6..f7406f0 100644
+index 11565a1..def68d2 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -153,6 +153,11 @@ if(BUILD_TESTING)
+@@ -152,6 +152,11 @@ if(BUILD_TESTING)
  endif()
  # try to enable wayland builds when possible
  pkg_check_modules(WAYLAND_SUPPORT wayland-cursor wayland-protocols egl wayland-egl)

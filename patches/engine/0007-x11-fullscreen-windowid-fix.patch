@@ -1,0 +1,90 @@
+diff --git a/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.cpp b/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.cpp
+index 9195b08..b860834 100644
+--- a/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.cpp
++++ b/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.cpp
+@@ -1,9 +1,13 @@
+ #include "X11FullScreenDetector.h"
+ #include "WallpaperEngine/Logging/Log.h"
+ 
++#include <X11/Xatom.h>
+ #include <X11/Xlib.h>
+ #include <X11/extensions/Xrandr.h>
+ 
++#define GLFW_EXPOSE_NATIVE_X11
++#include <GLFW/glfw3native.h>
++
+ #include "WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.h"
+ #include "WallpaperEngine/Render/Drivers/VideoFactories.h"
+ 
+@@ -51,6 +55,33 @@ X11FullScreenDetector::X11FullScreenDetector (Application::ApplicationContext& a
+ 
+ X11FullScreenDetector::~X11FullScreenDetector () { this->stop (); }
+ 
++static bool windowHasNetWmState (Display* display, Window window, const char* stateName) {
++    Atom actualType = None;
++    int actualFormat = 0;
++    unsigned long nitems = 0, bytesAfter = 0;
++    unsigned char* data = nullptr;
++
++    const Atom stateAtom = XInternAtom (display, "_NET_WM_STATE", False);
++    const Atom wantAtom = XInternAtom (display, stateName, False);
++
++    if (XGetWindowProperty (display, window, stateAtom, 0, 32, False, XA_ATOM, &actualType, &actualFormat,
++			    &nitems, &bytesAfter, &data) != Success || data == nullptr) {
++	return false;
++    }
++
++    bool found = false;
++    const unsigned long* atoms = reinterpret_cast<const unsigned long*> (data);
++    for (unsigned long i = 0; i < nitems; i++) {
++	if (atoms[i] == static_cast<unsigned long> (wantAtom)) {
++	    found = true;
++	    break;
++	}
++    }
++
++    XFree (data);
++    return found;
++}
++
+ bool X11FullScreenDetector::anythingFullscreen () const {
+     // stop rendering if anything is fullscreen
+     bool isFullscreen = false;
+@@ -63,7 +94,7 @@ bool X11FullScreenDetector::anythingFullscreen () const {
+ 	return false;
+     }
+ 
+-    const auto ourWindow = reinterpret_cast<Window> (dynamic_cast<GLFWOpenGLDriver&> (this->m_driver).getWindow ());
++    const auto ourWindow = glfwGetX11Window (dynamic_cast<GLFWOpenGLDriver&> (this->m_driver).getWindow ());
+     Window parentWindow;
+ 
+     {
+@@ -71,11 +102,12 @@ bool X11FullScreenDetector::anythingFullscreen () const {
+ 	unsigned int num_children;
+ 
+ 	if (!XQueryTree (this->m_display, ourWindow, &root, &parentWindow, &schildren, &num_children)) {
++	    XFree (children);
+ 	    return false;
+ 	}
+ 
+ 	if (schildren) {
+-	    XFree (children);
++	    XFree (schildren);
+ 	}
+     }
+ 
+@@ -93,6 +125,14 @@ bool X11FullScreenDetector::anythingFullscreen () const {
+ 	    continue;
+ 	}
+ 
++	if (windowHasNetWmState (this->m_display, children[i], "_NET_WM_STATE_BELOW")) {
++	    continue;
++	}
++
++	if (!windowHasNetWmState (this->m_display, children[i], "_NET_WM_STATE_FULLSCREEN")) {
++	    continue;
++	}
++
+ 	// compare width and height with the different screens we have
+ 	for (const auto& [name, viewport] : this->m_screens) {
+ 	    if (attribs.x == viewport.x && attribs.y == viewport.y && attribs.width == viewport.z

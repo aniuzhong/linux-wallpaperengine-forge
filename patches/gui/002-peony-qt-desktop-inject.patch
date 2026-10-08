@@ -1,5 +1,5 @@
 diff --git a/src/backend/internal/app/app.go b/src/backend/internal/app/app.go
-index 2f4441b..e238ffd 100644
+index 2f4441b..4f496f8 100644
 --- a/src/backend/internal/app/app.go
 +++ b/src/backend/internal/app/app.go
 @@ -9,6 +9,8 @@ import (
@@ -11,20 +11,17 @@ index 2f4441b..e238ffd 100644
  	"linux-wallpaperengine-gui/src/backend/internal/api"
  	"linux-wallpaperengine-gui/src/backend/internal/api/handlers"
  	"linux-wallpaperengine-gui/src/backend/internal/api/models"
-@@ -62,6 +64,12 @@ func (application *App) Run() {
+@@ -62,6 +64,9 @@ func (application *App) Run() {
  		logger.Printf("Failed to initialize config: %v", err)
  	}
  
-+	// UKUI desktop transparency injection (forge pkg/peony): runs in the
-+	// background, failures surface through the log bridge; Detach restores
-+	// the desktop in Cleanup
 +	peony.SetBridge(func(line string) { logger.Println(line) })
 +	go peony.Attach()
 +
  	// Start components
  	application.setupDisplayWatcher()
  	application.setupFullscreenDetector()
-@@ -192,6 +200,7 @@ func (application *App) handleSignals() {
+@@ -192,6 +197,7 @@ func (application *App) handleSignals() {
  func (application *App) Cleanup() {
  	logger.Println("Performing cleanup...")
  	application.processManager.KillAll()

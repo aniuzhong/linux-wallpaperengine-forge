@@ -1,0 +1,98 @@
+diff --git a/src/backend/internal/api/handlers/base.go b/src/backend/internal/api/handlers/base.go
+index f362e4a..b977fbc 100644
+--- a/src/backend/internal/api/handlers/base.go
++++ b/src/backend/internal/api/handlers/base.go
+@@ -1,7 +1,6 @@
+ package handlers
+ 
+ import (
+-	"encoding/json"
+ 	"fmt"
+ 
+ 	"linux-wallpaperengine-gui/src/backend/internal/api/models"
+@@ -23,7 +22,11 @@ func NewHandler(wallpaperService *wallpaper.Service, playlistService *playlist.S
+ 	}
+ }
+ 
+-func (handler *Handler) HandleIPC(request models.Request, encoder *json.Encoder) models.Response {
++type ResponseWriter interface {
++	Encode(msg interface{}) error
++}
++
++func (handler *Handler) HandleIPC(request models.Request, encoder ResponseWriter) models.Response {
+ 	switch request.Method {
+ 	case "ping", "quit", "open-ui", "restart-ui":
+ 		return handler.HandleSystem(request, encoder)
+diff --git a/src/backend/internal/api/handlers/system.go b/src/backend/internal/api/handlers/system.go
+index 494e374..1e36370 100644
+--- a/src/backend/internal/api/handlers/system.go
++++ b/src/backend/internal/api/handlers/system.go
+@@ -1,7 +1,6 @@
+ package handlers
+ 
+ import (
+-	"encoding/json"
+ 	"os"
+ 	"time"
+ 
+@@ -10,7 +9,7 @@ import (
+ 	"linux-wallpaperengine-gui/src/backend/internal/ui/electron"
+ )
+ 
+-func (handler *Handler) HandleSystem(request models.Request, encoder *json.Encoder) models.Response {
++func (handler *Handler) HandleSystem(request models.Request, encoder ResponseWriter) models.Response {
+ 	var response models.Response
+ 	response.ID = request.ID
+ 
+diff --git a/src/backend/internal/api/server.go b/src/backend/internal/api/server.go
+index 87e51eb..e59385d 100644
+--- a/src/backend/internal/api/server.go
++++ b/src/backend/internal/api/server.go
+@@ -60,6 +60,17 @@ func StartServer(path string, handler *handlers.Handler) {
+ 	}
+ }
+ 
++type lockedEncoder struct {
++	mu  sync.Mutex
++	enc *json.Encoder
++}
++
++func (writer *lockedEncoder) Encode(msg interface{}) error {
++	writer.mu.Lock()
++	defer writer.mu.Unlock()
++	return writer.enc.Encode(msg)
++}
++
+ func handleConnection(conn net.Conn, handler *handlers.Handler) {
+ 	defer func() {
+ 		if err := conn.Close(); err != nil {
+@@ -67,7 +78,7 @@ func handleConnection(conn net.Conn, handler *handlers.Handler) {
+ 		}
+ 	}()
+ 	decoder := json.NewDecoder(conn)
+-	encoder := json.NewEncoder(conn)
++	writer := &lockedEncoder{enc: json.NewEncoder(conn)}
+ 
+ 	// Channel for all outgoing messages to this client
+ 	outCh := make(chan interface{}, 100)
+@@ -90,7 +101,7 @@ func handleConnection(conn net.Conn, handler *handlers.Handler) {
+ 	// Writing goroutine
+ 	go func() {
+ 		for msg := range outCh {
+-			if err := encoder.Encode(msg); err != nil {
++			if err := writer.Encode(msg); err != nil {
+ 				return
+ 			}
+ 		}
+@@ -125,9 +136,9 @@ func handleConnection(conn net.Conn, handler *handlers.Handler) {
+ 
+ 		logger.Printf("Received: %s (ID: %d)", req.Method, req.ID)
+ 
+-		res := handler.HandleIPC(req, encoder)
++		res := handler.HandleIPC(req, writer)
+ 
+-		if err := encoder.Encode(res); err != nil {
++		if err := writer.Encode(res); err != nil {
+ 			logger.Println("Encode error:", err)
+ 			return
+ 		}

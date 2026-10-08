@@ -46,6 +46,26 @@ root-pixmap 路径。涉及 `GLFWOpenGLDriver.cpp/.h`、`X11Output.cpp`、
 wayland 开发库缺失时仅构建 X11 后端 (麒麟交付目标本就是 X11)。
 涉及 `CMakeLists.txt`。
 
+### 0007 — X11 全屏检测窗口 ID 修复 (内存泄漏根因)
+
+`X11FullScreenDetector::anythingFullscreen()` 把 `GLFWwindow*` 指针强转成
+X11 窗口 ID 传给 `XQueryTree`, 每帧 BadWindow 失败后提前 return: 全屏检测
+永远返回 false, 且第一次查询分配的根窗口 children 数组 (~2.4KB) 永不释放
+—— 4K60 实测泄漏 ~145KB/s, 5 天累积 73GB 直至 OOM。修复: 经
+`glfwGetX11Window` 取真实窗口 ID, 两处错误路径补 `XFree(children)`, 修正
+`schildren` 分支释放错缓冲 (UAF + 双重释放) 的问题。判定条件同步收紧:
+跳过 `_NET_WM_STATE_BELOW` (桌面壳层, 如 peony), 且要求
+`_NET_WM_STATE_FULLSCREEN` 原子 —— UKUI 屏保常驻全屏几何的可视对话框
+没有该原子, 纯几何匹配会永久误暂停壁纸。涉及 `X11FullScreenDetector.cpp`。
+
+### 0008 — Wayland 1.18 宿主机构建兼容
+
+`wl_output` 的 name/description 事件仅存在于 libwayland ≥ 1.20; 宿主机
+(麒麟 V10 带 1.18) 直接构建在 `WaylandOutputViewport.cpp` 的监听器
+初始化处编译失败。按 `WAYLAND_VERSION_NUMBER` 分支, 并对低版本下不再
+引用的回调加 `[[maybe_unused]]`。容器构建 (无 wayland dev) 不受影响。
+涉及 `WaylandOutputViewport.cpp`。
+
 ## 文件重叠说明
 
 `CMakeLists.txt` 同时承载 0001 (编译旗标) 与 0006 (Wayland 可选) 两项

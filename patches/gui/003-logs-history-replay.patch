@@ -1,8 +1,8 @@
 diff --git a/src/backend/internal/logger/logger.go b/src/backend/internal/logger/logger.go
-index 8a89c6e..fd3e02c 100644
+index 8a89c6e..c412536 100644
 --- a/src/backend/internal/logger/logger.go
 +++ b/src/backend/internal/logger/logger.go
-@@ -31,12 +31,18 @@ type LogEntry struct {
+@@ -31,12 +31,15 @@ type LogEntry struct {
  
  var (
  	listeners           []chan LogEntry
@@ -13,31 +13,25 @@ index 8a89c6e..fd3e02c 100644
  	}
  )
  
-+// logHistoryCap caps the replay buffer: the logs page usually opens long
-+// after backend startup; without this recent history, startup lines (app
-+// init, wallpaper launch, injection) would be invisible forever.
 +const logHistoryCap = 500
 +
  func stripANSI(text string) string {
  	return ansiRegex.ReplaceAllString(text, "")
  }
-@@ -45,6 +51,15 @@ func Subscribe() chan LogEntry {
+@@ -45,6 +48,12 @@ func Subscribe() chan LogEntry {
  	mu.Lock()
  	defer mu.Unlock()
  	ch := make(chan LogEntry, 100)
-+	// Replay recent history first, then go live: subscribers see the full
-+	// recent log
 +	for _, entry := range history {
 +		select {
 +		case ch <- entry:
 +		default:
-+			// Drop if channel is full
 +		}
 +	}
  	listeners = append(listeners, ch)
  	return ch
  }
-@@ -53,6 +68,10 @@ func broadcast(logType, msg string) {
+@@ -53,6 +62,10 @@ func broadcast(logType, msg string) {
  	mu.Lock()
  	defer mu.Unlock()
  	entry := LogEntry{Type: logType, Message: stripANSI(msg)}

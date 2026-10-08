@@ -1,14 +1,12 @@
+diff --git a/src/WallpaperEngine/Render/Shaders/ShaderUnit.cpp b/src/WallpaperEngine/Render/Shaders/ShaderUnit.cpp
+index fcc03fc..8b57ae0 100644
 --- a/src/WallpaperEngine/Render/Shaders/ShaderUnit.cpp
 +++ b/src/WallpaperEngine/Render/Shaders/ShaderUnit.cpp
-@@ -414,6 +414,47 @@
+@@ -414,6 +414,43 @@ std::string ShaderUnit::applyLinkedVaryingCompatibility (std::string source) con
      return source;
  }
  
 +std::string ShaderUnit::applyFragmentVaryingInjection (std::string source) const {
-+    // wallpapers authored for WE may consume vertex varyings in the fragment
-+    // stage without declaring them (the original compiler forwards varyings
-+    // between stages automatically); re-declare the missing ones so the
-+    // fragment unit compiles
 +    if (this->m_type != GLSLContext::UnitType_Fragment || this->m_link == nullptr) {
 +	return source;
 +    }
@@ -48,7 +46,7 @@
  std::string ShaderUnit::applyFragmentTexCoordCompatibility (std::string source) const {
      if (this->m_type != GLSLContext::UnitType_Fragment) {
  	return source;
-@@ -715,7 +756,7 @@
+@@ -715,7 +752,7 @@ const std::string& ShaderUnit::compile () {
  
      // this should be the rest of the shader
      this->m_final
@@ -57,9 +55,11 @@
  
      // the pass itself handles shader compilation, the unit doesn't have enough information for this step
      return this->m_final;
+diff --git a/src/WallpaperEngine/Render/Shaders/ShaderUnit.h b/src/WallpaperEngine/Render/Shaders/ShaderUnit.h
+index 0a5d5d6..c07efe4 100644
 --- a/src/WallpaperEngine/Render/Shaders/ShaderUnit.h
 +++ b/src/WallpaperEngine/Render/Shaders/ShaderUnit.h
-@@ -100,6 +100,7 @@
+@@ -100,6 +100,7 @@ private:
       * Adjusts vertex varyings when a workshop shader declares a narrower vertex type than its fragment peer.
       */
      [[nodiscard]] std::string applyLinkedVaryingCompatibility (std::string source) const;

@@ -12,17 +12,14 @@ index 87b2b07..9f5c2aa 100644
      const Wallpaper& m_wallpaperData;
  
 diff --git a/src/WallpaperEngine/Render/Wallpapers/CScene.cpp b/src/WallpaperEngine/Render/Wallpapers/CScene.cpp
-index fdfecd9..ff0d0ef 100644
+index 4933440..fdcb378 100644
 --- a/src/WallpaperEngine/Render/Wallpapers/CScene.cpp
 +++ b/src/WallpaperEngine/Render/Wallpapers/CScene.cpp
-@@ -295,6 +295,21 @@ void CScene::addObjectToRenderOrder (const Object& object) {
+@@ -297,6 +297,18 @@ void CScene::addObjectToRenderOrder (const Object& object) {
  ScriptEngine& CScene::getScriptEngine () const { return *this->m_scriptEngine; }
  Camera& CScene::getCamera () const { return *this->m_camera; }
  
 +void CScene::setupFramebuffers () {
-+    // render the scene at the output resolution so high-dpi screens get a
-+    // sharp image; the camera projection (world coordinates) is unchanged,
-+    // only the pixel density of the render targets increases
 +    const uint32_t width = this->getContext ().getOutput ().getFullWidth ();
 +    const uint32_t height = this->getContext ().getOutput ().getFullHeight ();
 +    const uint32_t clamp = this->getState ().getClampingMode ();
