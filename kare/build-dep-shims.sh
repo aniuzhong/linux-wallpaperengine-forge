@@ -77,6 +77,9 @@ normalize() {
 	while IFS= read -r link; do
 		tgt=$(readlink "$link")
 		case "$tgt" in
+			# normalize 会被闭包循环多轮调用: 已改写为垫片内路径的链接必须
+			# 跳过, 否则每轮再前置一次 $ROOT, 产出加倍的悬空路径
+			"$ROOT"/*) ;;
 			/*) ln -snf "$ROOT${tgt%%)}" "$link" 2>/dev/null || ln -snf "$(basename "$tgt")" "$link" ;;
 		esac
 	done < <(find -L "$ROOT/usr/lib" -maxdepth 3 -type l -name '*.so*' 2>/dev/null)
@@ -145,9 +148,35 @@ while IFS='|' read -r pc devs runs; do
 	pc=$(echo "$pc" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 	runs=$(echo "$runs" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 	[ -n "$runs" ] || continue
-	download_first "$runs" && extract_debs "$ROOT"
+	# 运行时列语义 = 逐个全部尝试 (与 dev 列的"首个成功即停"不同): 列内
+	# 是并存的拆分包或版本别名, 各含不同 .so —— 只取首个会漏 (如
+	# libpangocairo-1.0-0 与 libpango-1.0-0); 下载失败的别名静默跳过
+	ok=0
+	for r in $runs; do
+		if apt-get download "$r" >> /tmp/forge-dep-dl.log 2>&1; then
+			log "  downloaded runtime: $r"
+			ok=1
+		fi
+	done
+	if [ "$ok" = 1 ]; then extract_debs "$ROOT"; else warn "  runtime not in apt sources: $runs"; fi
 done < "$SPEC"
 normalize
+
+# ---- ②'' 断链自愈: dev 符号链接只由 dev 包提取产生, 闭包全绿的重跑不会
+# 重建它们 —— 会话刷新清掉 merge 树后悬空的 dev 链接 (典型症状) 若只重跑
+# 运行时提取将永不愈合。存在悬空 .so 链接即重提取全部 spec dev 包。
+broken=$(find "$ROOT/usr/lib" -maxdepth 3 -type l -name '*.so*' 2>/dev/null |
+	while IFS= read -r l; do [ -e "$l" ] || echo x; done | wc -l)
+if [ "$broken" -gt 0 ]; then
+	log "healing $broken broken link(s): re-extracting all spec dev packages..."
+	while IFS='|' read -r pc devs runs; do
+		case "$pc" in ['#']*|"") continue ;; esac
+		devs=$(echo "$devs" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+		[ -n "$devs" ] || continue
+		download_first "$devs" && extract_debs "$ROOT"
+	done < "$SPEC"
+	normalize
+fi
 
 # ---- ③ 工具与符号链接修补 -----------------------------------------------------
 # node 别名: 上游 tsc 的 shebang 需要 node; bun 官方支持被链接为 node
