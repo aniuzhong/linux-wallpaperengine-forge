@@ -18,15 +18,15 @@ DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 die() { echo "run-gui: $*" >&2; exit 1; }
 
 # ---- 1. 布局自检 ----
-[ -x "$DIR/gui/linux-wallpaperengine-gui" ] || die "套件不完整: 缺 gui/linux-wallpaperengine-gui"
-[ -x "$DIR/engine/linux-wallpaperengine" ] || die "套件不完整: 缺 engine/linux-wallpaperengine"
-[ -f "$DIR/lib/libpeony-alpha.so" ] || die "套件不完整: 缺 lib/libpeony-alpha.so"
+[ -x "$DIR/gui/linux-wallpaperengine-gui" ] || die "suite incomplete: missing gui/linux-wallpaperengine-gui"
+[ -x "$DIR/engine/linux-wallpaperengine" ] || die "suite incomplete: missing engine/linux-wallpaperengine"
+[ -f "$DIR/lib/libpeony-alpha.so" ] || die "suite incomplete: missing lib/libpeony-alpha.so"
 
 # ---- 2. bin 入口自愈: 引擎 $ORIGIN 依赖符号链接解析到 engine/ ----
 mkdir -p "$DIR/bin"
 ENTRY="$DIR/bin/linux-wallpaperengine"
 if [ -e "$ENTRY" ] && [ ! -L "$ENTRY" ]; then
-	echo "run-gui: bin/linux-wallpaperengine 是实体文件而非符号链接, 已自动修复" >&2
+	echo "run-gui: bin/linux-wallpaperengine was a regular file instead of a symlink; repaired" >&2
 	rm -f "$ENTRY"
 fi
 ln -sfn ../engine/linux-wallpaperengine "$ENTRY"
@@ -34,7 +34,7 @@ ln -sfn ../engine/linux-wallpaperengine "$ENTRY"
 # ---- 3. 单实例保护 ----
 if pgrep -f "$DIR/gui/linux-wallpaperengine-gui" >/dev/null 2>&1 ||
 	pgrep -f "$DIR/gui/resources/linux-wallpaperengine-gui" >/dev/null 2>&1; then
-	die "本套件已有实例在运行 (窗口可能收在托盘), 请先退出再启动:
+	die "an instance of this suite is already running (its window may be minimized to tray); exit it first:
   pkill -f \"$DIR\""
 fi
 

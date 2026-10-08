@@ -16,3 +16,4 @@ dist/
 
 # ---- Others ----
 .cache/
+kylin/v10/packaging/lib/

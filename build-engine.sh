@@ -2,8 +2,8 @@
 #
 # build-engine.sh — 编译 linux-wallpaperengine 引擎本体
 #
-# 源码:   上游克隆钉在 ENGINE_REF (third_party/), 构建前套用
-#         patches/engine/ 全系列补丁
+# 源码:   上游克隆钉在 ENGINE_REF (third_party/), 构建前按 target 声明的
+#         目录序 (公共层在前) 套用全部引擎补丁
 # 产物:   out/engine/ (扁平 payload: 安装前缀即载荷根, 引擎二进制与 CEF
 #         运行时同级, 随套件整体分发)
 # 日志:   out/build-engine.log
@@ -21,14 +21,14 @@ init_log engine
 ENGINE_SRC="$THIRD_PARTY/linux-wallpaperengine"
 
 # ---- 1. 系统依赖探测 ----
-# 清单即引擎在麒麟 V10 SP1 上的全部构建依赖; 只探测并给出安装命令, 不代装。
+# 清单即引擎的全部构建依赖; 只探测并给出安装命令, 不代装。
 log "Probing system dependencies..."
 probe_reset
 check_cmd git git
 check_cmd curl curl
 check_cmd cc build-essential
-check_cmd gcc-10 gcc-10
-check_cmd g++-10 g++-10
+check_cmd "$CC" "$CC"
+check_cmd "$CXX" "$CXX"
 check_cmd pkg-config pkg-config
 check_lib gl libgl-dev
 check_lib xrandr libxrandr-dev
@@ -61,7 +61,8 @@ probe_report
 ensure_repo "https://github.com/Almamu/linux-wallpaperengine.git" "$ENGINE_SRC" "$ENGINE_REF"
 log "Syncing submodules (slow on first run) ..."
 git -C "$ENGINE_SRC" submodule update --init --recursive
-apply_patches "$ENGINE_SRC" "$FORGE_DIR/patches/engine"
+# 目录顺序即套用序 (公共补丁先于平台补丁); 单次调用统一重置一次
+apply_patches "$ENGINE_SRC" "${ENGINE_PATCH_DIRS[@]}"
 
 # ---- 3. 工具链 ----
 # glslang 子模块要求 cmake >= 3.22, 麒麟系统只有 3.16, 不足时落用户态
@@ -91,7 +92,7 @@ if [ -n "$(ls -A "$CEF_CACHE" 2>/dev/null)" ]; then
 fi
 
 log "Configuring CMake ..."
-# 编译器由 lib.sh 钉为 gcc-10 (CC/CXX), 此处再显式传入: CMake 只在首次
+# 编译器由片声明钉定 (CC/CXX), 此处再显式传入: CMake 只在首次
 # 配置时读环境变量, 显式旗标让缓存里也留有可审计的记录
 cmake -S "$ENGINE_SRC" -B "$BUILD_DIR" \
 	-DCMAKE_BUILD_TYPE=Release \

@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 #
-# 被 build-*.sh source，不直接执行。
+# 被 forge.sh / build-*.sh source，不直接执行。
 #
 # 布局约定 (按所有权划分):
-#   src/           forge 自有源码 (TS: gui-workshop; C++: peony-qt-desktop)
-#   pkg/           forge 自有 Go 模块 (peony, 经 go.mod replace 接入)
+#   (根)           公共层: 构建脚本 + patches/ (跨平台补丁,
+#                  条目说明见 patches/README.md)
+#   <族>/<版本>/   平台片: target.sh (纯声明) + 本片补丁/源码/打包物料
 #   third_party/   上游克隆 (钉住版本, 含各自构建缓存; 勿直接修改,
 #                  ensure_repo 会 checkout -f 冲掉)
 #   toolchains/    用户态工具链 (go / bun / rust / cmake) 与大文件缓存 (cef)
-#   patches/       forge 对 third_party 克隆的差异补丁 (条目说明见
-#                  patches/*/README.md)
 #   out/           产物与日志 (build-<目标>.log)
 
 # ---- 版本钉 (环境变量可覆盖) ----
@@ -18,15 +17,72 @@ ENGINE_REF="${ENGINE_REF:-b016d7d1fdcf4e5fd2f9c9fa420a8aaa07fee02d}"
 BUN_VERSION="${BUN_VERSION:-1.4.2}"
 CMAKE_VERSION="${CMAKE_VERSION:-4.4.3}"
 
-# ---- 编译器钉 (环境变量可覆盖) ----
-export CC="${CC:-gcc-10}"
-export CXX="${CXX:-g++-10}"
-
 FORGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$FORGE_DIR/src"
 THIRD_PARTY="$FORGE_DIR/third_party"
 TOOLCHAINS="$FORGE_DIR/toolchains"
 OUTPUT="$FORGE_DIR/out"
+
+log() { printf '\033[32m[%s]\033[0m %s\n' "${LOG_TAG:-build}" "$*"; }
+warn() { printf '\033[33m[%s]\033[0m %s\n' "${LOG_TAG:-build}" "$*" >&2; }
+die() { printf '\033[31m[%s]\033[0m %s\n' "${LOG_TAG:-build}" "$*" >&2; exit 1; }
+
+forge_arch() {
+	case "$(uname -m)" in
+		x86_64) printf 'amd64\n' ;;
+		aarch64) printf 'arm64\n' ;;
+		*) uname -m ;;
+	esac
+}
+
+forge_fingerprint() {
+	local kv id ver
+	kv="$(. /etc/os-release 2>/dev/null && printf '%s %s' "${ID:-}" "${VERSION_ID:-}")" || return 0
+	id=${kv%% *}
+	ver=${kv#* }
+	[ -n "$id" ] && [ -n "$ver" ] && [ "$id" != "$kv" ] || return 0
+	printf '%s/%s\n' "$id" "$ver"
+}
+
+forge_list_slices() {
+	local d
+	for d in "$FORGE_DIR"/*/*/; do
+		[ -f "${d}target.sh" ] && printf '%s\n' "${d#"$FORGE_DIR"/}" | sed 's:/$::'
+	done
+	return 0
+}
+
+forge_check_guards() {
+	local os_pretty os_idlike
+	os_pretty="$(. /etc/os-release 2>/dev/null && printf '%s %s' "${PRETTY_NAME:-}" "${VERSION_US:-}")" || os_pretty=""
+	os_idlike="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID_LIKE:-}")" || os_idlike=""
+	if [ -n "${GUARD_PRETTY:-}" ] && [[ "$os_pretty" != *"$GUARD_PRETTY"* ]]; then
+		die "guard failed: PRETTY_NAME/VERSION_US '$os_pretty' does not contain '$GUARD_PRETTY'"
+	fi
+	if [ -n "${GUARD_ID_LIKE:-}" ] && [[ "$os_idlike" != *"$GUARD_ID_LIKE"* ]]; then
+		die "guard failed: ID_LIKE '$os_idlike' does not contain '$GUARD_ID_LIKE'"
+	fi
+}
+
+forge_resolve() {
+	local requested="${FORGE_TARGET:-}" fp dir
+	fp="$(forge_fingerprint)" || fp=""
+	if [ -n "$requested" ]; then
+		dir="$FORGE_DIR/$requested"
+		[ -f "$dir/target.sh" ] || die "unknown target '$requested' (available: $(forge_list_slices | tr '\n' ' '))"
+		if [ -n "$fp" ] && [ "$requested" != "$fp" ]; then
+			warn "host detected as '$fp', building explicitly requested '$requested'"
+		fi
+	else
+		[ -n "$fp" ] || die "cannot detect host distribution; available: $(forge_list_slices | tr '\n' ' ')"
+		dir="$FORGE_DIR/$fp"
+		[ -f "$dir/target.sh" ] || die "no slice for host fingerprint '$fp' ($(forge_arch)); available: $(forge_list_slices | tr '\n' ' ')"
+	fi
+	printf '%s\n' "$dir"
+}
+
+TARGET_DIR="$(forge_resolve)"
+source "$TARGET_DIR/target.sh"
+forge_check_guards
 
 # ---- 镜像 ----
 GO_MIRRORS=(
@@ -44,10 +100,6 @@ CMAKE_URLS=(
 	"https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION"
 	"https://cmake.org/files/v${CMAKE_VERSION%.*}"
 )
-
-log() { printf '\033[32m[%s]\033[0m %s\n' "${LOG_TAG:-build}" "$*"; }
-warn() { printf '\033[33m[%s]\033[0m %s\n' "${LOG_TAG:-build}" "$*" >&2; }
-die() { printf '\033[31m[%s]\033[0m %s\n' "${LOG_TAG:-build}" "$*" >&2; exit 1; }
 
 # 每个入口调用一次:日志写入 out/build-<目标>.log,同时在终端显示
 init_log() {
@@ -87,21 +139,34 @@ ensure_repo() {
 	log "Source ready: $(basename "$dir") @ ${ref:0:9}"
 }
 
-# apply_patches <仓库> <补丁目录>
-# 每次从干净基线(git HEAD)重新套用全部补丁: 补丁应用为瞬时操作,
-# 端状态确定, 且不依赖上一次的套用痕迹 — 避免"已生效跳过"检测在
-# 补丁上下文重叠时失效的问题。
+# apply_patches <仓库> <补丁目录>... — 每次从干净基线(git HEAD)重新套用
+# 全部补丁: 先统一重置一次, 再按给定目录顺序依次套用 (目录顺序即套用序,
+# 公共层在前)。补丁应用为瞬时操作, 端状态确定, 且不依赖上一次的套用痕迹
+# — 避免"已生效跳过"检测在补丁上下文重叠时失效的问题。
 apply_patches() {
-	local repo="$1" dir="$2" patch name f
+	local repo="$1"
+	shift
+	local dir patch name f
 	git -C "$repo" checkout -- . 2>/dev/null || true
+	# 逐目录显式收集补丁清单。不要写 "$@"/*.patch: 该展开在本机 bash 上
+	# 只有末位参数拿到后缀, 首参变裸目录名, awk 打开目录失败后经
+	# 2>/dev/null + pipefail + set -e 静默退出 (本次迁移的实际故障)。
+	shopt -s nullglob
+	local -a all_patches=()
+	for dir in "$@"; do
+		for patch in "$dir"/*.patch; do
+			all_patches+=("$patch")
+		done
+	done
 	# 移除补丁即将新建的文件残留 (上一次套用的产物), 否则 git apply 会因文件已存在而失败
-	local newfiles
-	newfiles=$(awk '/^--- \/dev\/null$/{nl=1; next} nl==1 && /^\+\+\+ b\//{sub(/^\+\+\+ b\//, ""); print; nl=0; next} {nl=0}' "$dir"/*.patch 2>/dev/null | sort -u)
+	local newfiles=""
+	if [ ${#all_patches[@]} -gt 0 ]; then
+		newfiles=$(awk '/^--- \/dev\/null$/{nl=1; next} nl==1 && /^\+\+\+ b\//{sub(/^\+\+\+ b\//, ""); print; nl=0; next} {nl=0}' "${all_patches[@]}" | sort -u)
+	fi
 	for f in $newfiles; do
 		rm -f "$repo/$f"
 	done
-	shopt -s nullglob
-	for patch in "$dir"/*.patch; do
+	for patch in "${all_patches[@]}"; do
 		name=$(basename "$patch")
 		if (cd "$repo" && git apply --check "$patch" 2>/dev/null); then
 			(cd "$repo" && git apply "$patch")

@@ -2,10 +2,11 @@
 #
 # build-gui.sh — 编译 linux-wallpaperengine-gui (Electron 前端 + Go 后端)
 #
-# 源码:   上游克隆钉在 GUI_REF (third_party/), 构建前套用 patches/gui/
-#         全系列补丁; forge 自有模块不进补丁: pkg/peony (桌面透明注入,
-#         Go) 由 go mod edit 现场接入; src/gui-workshop (Workshop 隔离,
+# 源码:   上游克隆钉在 GUI_REF (third_party/), 构建前按 target 声明的
+#         目录序套用全部 GUI 补丁; forge 自有模块不进补丁: Go 模块
+#         (桌面透明注入) 由 go mod edit 现场接入; overlay (Workshop 隔离,
 #         TS) 整体覆盖到源码树对应路径, 上游演进经 UPSTREAM_BASE hash 告警
+#         (二者位置均由 target.sh 声明)
 # 产物:   out/linux-unpacked/ (electron-builder --dir, 目录形态)
 # 日志:   out/build-gui.log
 #
@@ -37,12 +38,12 @@ probe_report
 
 # ---- 2. 源码 + 补丁 + forge overlay ----
 ensure_repo "https://github.com/AzPepoze/linux-wallpaperengine-gui" "$GUI_SRC" "$GUI_REF"
-apply_patches "$GUI_SRC" "$FORGE_DIR/patches/gui"
+# 目录顺序即套用序 (公共补丁先于平台补丁); 单次调用统一重置一次
+apply_patches "$GUI_SRC" "${GUI_PATCH_DIRS[@]}"
 
 # src/gui-workshop: forge 自有前端源码, 覆盖安装到源码树 (逻辑进自有
 # 源码, 补丁只留 vite 接线 — 与 Go 侧 pkg/peony 同一教义)。每次构建
-# 无条件覆盖, 端状态确定。
-OVERLAY_DIR="$SRC_DIR/gui-workshop"
+# 无条件覆盖, 端状态确定。OVERLAY_DIR 由 target.sh 声明。
 for f in "$OVERLAY_DIR"/*.ts; do
 	name=$(basename "$f")
 	cp -f "$f" "$GUI_SRC/src/frontend/main/services/$name"
@@ -105,14 +106,14 @@ log "Overriding steamworks native module with local build ..."
 cp "$SWJS_DIST/steamworksjs.linux-x64-gnu.node" "$NODE_SWJS/"
 cp "$SWJS_DIST/libsteam_api.so" "$NODE_SWJS/"
 
-# ---- 6. pkg/peony 模块接线 ----
+# ---- 6. forge Go 模块接线 ----
 # 本地 replace 由构建脚本现场注入, 不进补丁: apply_patches 每轮把 go.mod
-# 重置回上游, 因此每次构建前重新注入。目标为 forge 自有模块 pkg/peony
+# 重置回上游, 因此每次构建前重新注入。目标由 target.sh 声明
 # (纯 stdlib, 本地目录无需 go.sum)。
-log "Wiring pkg/peony module into GUI go.mod ..."
+log "Wiring $GO_REPLACE_PKG module into GUI go.mod ..."
 (cd "$GUI_SRC/src/backend" && go mod edit \
-	-require="lwe-forge/pkg/peony@v0.0.0" \
-	-replace="lwe-forge/pkg/peony=$FORGE_DIR/pkg/peony")
+	-require="$GO_REPLACE_PKG@v0.0.0" \
+	-replace="$GO_REPLACE_PKG=$GO_REPLACE_DIR")
 
 # ---- 7. 构建 ----
 # 流水线: tsc 类型门禁 -> Go 后端 (CGO) -> vite 前端 -> electron-builder --dir

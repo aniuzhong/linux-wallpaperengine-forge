@@ -2,8 +2,9 @@
 #
 # build-shim.sh — 编译 UKUI 桌面透明注入器 libpeony-alpha.so
 #
-# 源码:   src/peony-qt-desktop/ (forge 自有源码, 单翻译单元, 非上游克隆)
-# 产物:   out/integration/libpeony-alpha.so (打包时由 package.sh 收入套件 lib/)
+# 源码:   <片>/src/peony-qt-desktop/ (forge 自有源码, 单翻译单元, 非上游克隆;
+#         位置由 target.sh 的 SHIM_SRC 声明)
+# 产物:   <片>/packaging/lib/libpeony-alpha.so (package.sh 原样收入套件)
 # 日志:   out/build-shim.log
 #
 # 说明:   构建要求刻意压到最低: cmake >= 3.16 (麒麟系统 3.16 直接达标,
@@ -13,21 +14,24 @@
 #         单独运行。
 #
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+# 本脚本位于片内 (<族>/<版本>/), lib.sh 在仓库根
+FORGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$FORGE_DIR"
 source ./lib.sh
 
 init_log shim
-SHIM_SRC="$SRC_DIR/peony-qt-desktop"
 SHIM_BUILD="$SHIM_SRC/build"
-PAYLOAD="$OUTPUT/integration"
+PAYLOAD="$TARGET_DIR/packaging/lib"
+rm -rf "$PAYLOAD"
+mkdir -p "$PAYLOAD"
 
 # ---- 1. 系统依赖探测 ----
 # Qt5Core/Qt5Gui 只提供头文件与 .pc 描述, 对应同一个 qtbase5-dev
 log "Probing system dependencies..."
 probe_reset
 check_cmd 'g++' g++
-check_cmd gcc-10 gcc-10
-check_cmd g++-10 g++-10
+check_cmd "$CC" "$CC"
+check_cmd "$CXX" "$CXX"
 check_cmd pkg-config pkg-config
 check_lib Qt5Core qtbase5-dev
 check_lib Qt5Gui qtbase5-dev
@@ -48,7 +52,7 @@ if [ -f "$SHIM_BUILD/CMakeCache.txt" ] && ! grep -Fqx "CMAKE_HOME_DIRECTORY:INTE
 fi
 
 log "Configuring CMake ..."
-# 编译器随 lib.sh 钉为 gcc-10, 显式传入理由同 build-engine.sh
+# 编译器随片声明钉定 (CC/CXX), 显式传入理由同 build-engine.sh
 cmake -S "$SHIM_SRC" -B "$SHIM_BUILD" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_CXX_COMPILER="$CXX" \
@@ -78,5 +82,5 @@ fi
 
 log "=========================================="
 log "Shim build complete: $SHIM_SO"
-log "Deployed to suite lib/ by package.sh"
+log "Staged into packaging/lib/"
 log "=========================================="
