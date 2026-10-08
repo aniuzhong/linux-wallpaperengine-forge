@@ -10,12 +10,22 @@
 
 ## 逻辑补丁清单
 
-### 0001 — gcc9 / c++2a 兼容
+### 0001 — gcc10 / c++20 兼容
 
-麒麟 V10 SP1 的 gcc 9 最高支持 `-std=c++2a`, 上游按 C++17 构建。
-涉及 `CMakeLists.txt`、`CMakeModules/FindFFMPEG.cmake` 与约 20 个源文件的
-小修: 放宽 CEF 相关编译旗标、补齐缺失包含、规避 gcc9 不接受的写法
-(如部分指定初始化器)。
+麒麟 V10 SP1 自带 gcc-10 (10.3),其 libstdc++ 原生支持上游使用的全部
+ranges/views 设施,`-std=c++20` 旗标也可原样识别,因此上游代码在
+ranges 用法上零修改(编译器统一钉在 gcc-10,见 lib.sh)。本补丁只剩
+与编译器版本无关的少量修正:
+
+- `CMakeLists.txt`:摘掉 CEF 缺省旗标里 clang 专属的
+  `-Wno-undefined-var-template`(gcc 不认识);
+- `CMakeModules/FindFFMPEG.cmake`:删除空的 `REQUIRED_VARS` 的坏
+  `find_package_handle_standard_args` 调用(cmake 配置期即报错);
+- `ColorBuilder.cpp`:libstdc++ 到 13 才有 `<format>`,以 sstream +
+  snprintf 等价实现 CSS 色值展开;
+- `MediaSource.h/.cpp`:显式补 `#include <memory>` —— 上游靠新版
+  libstdc++ 的传递包含拿到 `shared_ptr`/`make_unique`,gcc-10 下不再
+  传递可得(`<ranges>` 保留,本文件确实在用)。
 
 ### 0002 — X11 桌面层窗口 (核心)
 

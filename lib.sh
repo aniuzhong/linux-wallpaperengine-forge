@@ -18,6 +18,10 @@ ENGINE_REF="${ENGINE_REF:-b016d7d1fdcf4e5fd2f9c9fa420a8aaa07fee02d}"
 BUN_VERSION="${BUN_VERSION:-1.4.2}"
 CMAKE_VERSION="${CMAKE_VERSION:-4.4.3}"
 
+# ---- 编译器钉 (环境变量可覆盖) ----
+export CC="${CC:-gcc-10}"
+export CXX="${CXX:-g++-10}"
+
 FORGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$FORGE_DIR/src"
 THIRD_PARTY="$FORGE_DIR/third_party"

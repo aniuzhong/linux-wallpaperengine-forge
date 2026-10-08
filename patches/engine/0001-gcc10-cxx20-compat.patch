@@ -1,0 +1,102 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 11565a1..ffcceb6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -124,7 +124,7 @@ list(REMOVE_ITEM CEF_CXX_COMPILER_FLAGS -fno-rtti)
+ list(REMOVE_ITEM CEF_CXX_COMPILER_FLAGS -std=c++17)
+ list(REMOVE_ITEM CEF_COMPILER_FLAGS -fvisibility=hidden)
+ list(REMOVE_ITEM CEF_COMPILER_FLAGS -fvisibility-inlines-hidden)
+-list(APPEND CEF_CXX_COMPILER_FLAGS -std=c++20)
++list(REMOVE_ITEM CEF_CXX_COMPILER_FLAGS -Wno-undefined-var-template)
+ list(APPEND CEF_EXE_LINKER_FLAGS -rdynamic)
+ # remove the vulkan library from the files to copy so it doesn't fail after removing it
+ list(REMOVE_ITEM CEF_BINARY_FILES libvulkan.so.1)
+diff --git a/CMakeModules/FindFFMPEG.cmake b/CMakeModules/FindFFMPEG.cmake
+index 4ad1c79..313cebf 100644
+--- a/CMakeModules/FindFFMPEG.cmake
++++ b/CMakeModules/FindFFMPEG.cmake
+@@ -20,13 +20,6 @@
+ 
+ include(FindPackageHandleStandardArgs)
+ 
+-    find_package_handle_standard_args(FFMPEG
+-        FOUND_VAR FFMPEG_FOUND
+-        VERSION_VAR FFMPEG_VERSION
+-        HANDLE_COMPONENTS
+-        REQUIRED_VARS
+-    )
+-
+ if(FFMPEG_LIBRARIES AND FFMPEG_INCLUDE_DIR)
+   # in cache already
+   set(FFMPEG_FOUND TRUE)
+diff --git a/src/WallpaperEngine/Data/Builders/ColorBuilder.cpp b/src/WallpaperEngine/Data/Builders/ColorBuilder.cpp
+index e13a2d5..ac00b33 100644
+--- a/src/WallpaperEngine/Data/Builders/ColorBuilder.cpp
++++ b/src/WallpaperEngine/Data/Builders/ColorBuilder.cpp
+@@ -2,7 +2,7 @@
+ #include "VectorBuilder.h"
+ 
+ #include <algorithm>
+-#include <format>
++#include <sstream>
+ #include <glm/vec3.hpp>
+ 
+ const WallpaperEngine::Data::Model::Color WallpaperEngine::Data::Builders::ColorBuilder::White
+@@ -17,7 +17,7 @@ WallpaperEngine::Data::Builders::ColorBuilder::parse (const std::string& value,
+     // replace the actual separators with spaces to normalize them
+     if (copy.find (',') != std::string::npos) {
+ 	// replace comma separator with spaces so it's
+-	std::ranges::replace (copy, ',', ' ');
++	std::replace (copy.begin (), copy.end (), ',', ' ');
+     }
+ 
+     // hex colors should be converted to int colors
+@@ -27,15 +27,16 @@ WallpaperEngine::Data::Builders::ColorBuilder::parse (const std::string& value,
+ 	// expand short css notation into the right one
+ 	// support for css notation
+ 	if (number.size () == 3) {
+-	    number = std::format (
+-		"{}{}{}{}{}{}{:02x}", number.at (0), number.at (0), number.at (1), number.at (1), number.at (2),
+-		number.at (2), static_cast<int> (alpha * 255)
+-	    );
++	    std::stringstream ss;
++	    ss << number.at (0) << number.at (0) << number.at (1) << number.at (1) << number.at (2) << number.at (2);
++	    char alphaHex[10];
++	    snprintf (alphaHex, sizeof (alphaHex), "%02x", static_cast<int> (alpha * 255));
++	    ss << alphaHex;
++	    number = ss.str ();
+ 	} else if (number.size () == 4) {
+-	    number = std::format (
+-		"{}{}{}{}{}{}{}{}", number.at (0), number.at (0), number.at (1), number.at (1), number.at (2),
+-		number.at (2), number.at (3), number.at (3)
+-	    );
++	    std::stringstream ss;
++	    ss << number.at (0) << number.at (0) << number.at (1) << number.at (1) << number.at (2) << number.at (2) << number.at (3) << number.at (3);
++	    number = ss.str ();
+ 	} else if (number.size () != 6 && number.size () != 8) {
+ 	    sLog.exception ("Invalid CSS color notation for ", value);
+ 	}
+diff --git a/src/WallpaperEngine/Media/MediaSource.cpp b/src/WallpaperEngine/Media/MediaSource.cpp
+index f3c6126..051d256 100644
+--- a/src/WallpaperEngine/Media/MediaSource.cpp
++++ b/src/WallpaperEngine/Media/MediaSource.cpp
+@@ -1,6 +1,7 @@
+ #include "MediaSource.h"
+ 
+ #include <ranges>
++#include <memory>
+ 
+ using namespace WallpaperEngine::Media;
+ 
+diff --git a/src/WallpaperEngine/Media/MediaSource.h b/src/WallpaperEngine/Media/MediaSource.h
+index 300a30c..19663c6 100644
+--- a/src/WallpaperEngine/Media/MediaSource.h
++++ b/src/WallpaperEngine/Media/MediaSource.h
+@@ -3,6 +3,7 @@
+ #include <chrono>
+ #include <functional>
+ #include <map>
++#include <memory>
+ #include <string>
+ 
+ namespace WallpaperEngine::Media {

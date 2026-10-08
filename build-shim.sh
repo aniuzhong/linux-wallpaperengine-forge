@@ -26,6 +26,8 @@ PAYLOAD="$OUTPUT/integration"
 log "Probing system dependencies..."
 probe_reset
 check_cmd 'g++' g++
+check_cmd gcc-10 gcc-10
+check_cmd g++-10 g++-10
 check_cmd pkg-config pkg-config
 check_lib Qt5Core qtbase5-dev
 check_lib Qt5Gui qtbase5-dev
@@ -46,8 +48,10 @@ if [ -f "$SHIM_BUILD/CMakeCache.txt" ] && ! grep -Fqx "CMAKE_HOME_DIRECTORY:INTE
 fi
 
 log "Configuring CMake ..."
+# 编译器随 lib.sh 钉为 gcc-10, 显式传入理由同 build-engine.sh
 cmake -S "$SHIM_SRC" -B "$SHIM_BUILD" \
 	-DCMAKE_BUILD_TYPE=Release \
+	-DCMAKE_CXX_COMPILER="$CXX" \
 	-DCMAKE_INSTALL_PREFIX="$PAYLOAD"
 log "Building ($(nproc) jobs) ..."
 cmake --build "$SHIM_BUILD" -j"$(nproc)"
