@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
-#
-# 被 forge.sh / build-*.sh source，不直接执行。
-#
-# 布局约定 (按所有权划分):
-#   (根)           公共层: 构建脚本 + patches/ (跨平台补丁,
-#                  条目说明见 patches/README.md)
-#   <族>/<版本>/   平台片: target.sh (纯声明) + 本片补丁/源码/打包物料
-#   third_party/   上游克隆 (钉住版本, 含各自构建缓存; 勿直接修改,
-#                  ensure_repo 会 checkout -f 冲掉)
-#   toolchains/    用户态工具链 (go / bun / rust / cmake) 与大文件缓存 (cef)
-#   out/           产物与日志 (build-<目标>.log)
 
-# ---- 版本钉 (环境变量可覆盖) ----
 GUI_REF="${GUI_REF:-8855fad673932991dde0241530941a520b0e34a2}"
 ENGINE_REF="${ENGINE_REF:-b016d7d1fdcf4e5fd2f9c9fa420a8aaa07fee02d}"
 BUN_VERSION="${BUN_VERSION:-1.4.2}"
@@ -84,12 +72,11 @@ TARGET_DIR="$(forge_resolve)"
 source "$TARGET_DIR/target.sh"
 forge_check_guards
 
-# ---- 镜像 ----
 GO_MIRRORS=(
 	"https://mirrors.aliyun.com/golang"
 	"https://golang.google.cn/dl"
 )
-BUN_MIRROR="${BUN_MIRROR:-https://github.com/oven-sh/bun/releases/download}" # 无国内镜像,可自行替换
+BUN_MIRROR="${BUN_MIRROR:-https://github.com/oven-sh/bun/releases/download}"
 NPM_REGISTRY="https://registry.npmmirror.com"
 ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
 ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
@@ -101,14 +88,12 @@ CMAKE_URLS=(
 	"https://cmake.org/files/v${CMAKE_VERSION%.*}"
 )
 
-# 每个入口调用一次:日志写入 out/build-<目标>.log,同时在终端显示
 init_log() {
 	mkdir -p "$OUTPUT"
 	exec > >(tee -a "$OUTPUT/build-$1.log") 2>&1
 	LOG_TAG="$1"
 }
 
-# fetch <输出文件> <候选URL...> — 依次尝试直到成功
 fetch() {
 	local out="$1" url
 	shift
@@ -120,7 +105,6 @@ fetch() {
 	return 1
 }
 
-# ensure_repo <URL> <目录> <钉住ref> — 克隆(若缺)并对齐到 ref(变更时自动切换)
 ensure_repo() {
 	local url="$1" dir="$2" ref="$3"
 	if [ ! -d "$dir/.git" ]; then
@@ -139,18 +123,11 @@ ensure_repo() {
 	log "Source ready: $(basename "$dir") @ ${ref:0:9}"
 }
 
-# apply_patches <仓库> <补丁目录>... — 每次从干净基线(git HEAD)重新套用
-# 全部补丁: 先统一重置一次, 再按给定目录顺序依次套用 (目录顺序即套用序,
-# 公共层在前)。补丁应用为瞬时操作, 端状态确定, 且不依赖上一次的套用痕迹
-# — 避免"已生效跳过"检测在补丁上下文重叠时失效的问题。
 apply_patches() {
 	local repo="$1"
 	shift
 	local dir patch name f
 	git -C "$repo" checkout -- . 2>/dev/null || true
-	# 逐目录显式收集补丁清单。不要写 "$@"/*.patch: 该展开在本机 bash 上
-	# 只有末位参数拿到后缀, 首参变裸目录名, awk 打开目录失败后经
-	# 2>/dev/null + pipefail + set -e 静默退出 (本次迁移的实际故障)。
 	shopt -s nullglob
 	local -a all_patches=()
 	for dir in "$@"; do
@@ -158,7 +135,6 @@ apply_patches() {
 			all_patches+=("$patch")
 		done
 	done
-	# 移除补丁即将新建的文件残留 (上一次套用的产物), 否则 git apply 会因文件已存在而失败
 	local newfiles=""
 	if [ ${#all_patches[@]} -gt 0 ]; then
 		newfiles=$(awk '/^--- \/dev\/null$/{nl=1; next} nl==1 && /^\+\+\+ b\//{sub(/^\+\+\+ b\//, ""); print; nl=0; next} {nl=0}' "${all_patches[@]}" | sort -u)
@@ -175,12 +151,9 @@ apply_patches() {
 			die "Cannot apply patch (upstream may have moved): $patch"
 		fi
 	done
-	# 收尾必须关掉 nullglob: 本文件被 source 进调用方, 泄漏会改变其后
-	# 所有通配行为 (空匹配展开为空串而非字面模式)
 	shopt -u nullglob
 }
 
-# ---- 依赖探测框架:入口声明探测项,probe_report 统一报告 ----
 PROBE_MISSING=()
 PROBE_NO_PC=0
 
@@ -189,14 +162,14 @@ probe_reset() {
 	PROBE_NO_PC=0
 }
 
-check_cmd() { # <命令> <提供的软件包>
+check_cmd() {
 	if ! command -v "$1" >/dev/null 2>&1; then
 		warn "Missing command: $1 (package: $2)"
 		PROBE_MISSING+=("$2")
 	fi
 }
 
-check_lib() { # <pkg-config模块> <提供的软件包>
+check_lib() {
 	if ! command -v pkg-config >/dev/null 2>&1; then
 		if [ "$PROBE_NO_PC" = "0" ]; then
 			warn "Missing command: pkg-config (package: pkg-config)"
@@ -211,7 +184,7 @@ check_lib() { # <pkg-config模块> <提供的软件包>
 	fi
 }
 
-check_header() { # <头文件路径> <提供的软件包>
+check_header() {
 	if [ ! -e "$1" ]; then
 		warn "Missing header: $1 (package: $2)"
 		PROBE_MISSING+=("$2")
@@ -233,9 +206,7 @@ probe_report() {
 	log "System dependencies OK"
 }
 
-# ---- 工具链: 各 ensure_* 幂等,安装到 toolchains/ 并导出所需环境 ----
 
-# ensure_go <版本> — 官方 tar 包,导出 GOPATH/GOPROXY 等
 ensure_go() {
 	local version="$1"
 	export PATH="$TOOLCHAINS/go/bin:$PATH"
@@ -255,7 +226,6 @@ ensure_go() {
 	log "Go: $(go version)"
 }
 
-# ensure_bun <版本> — zip 包,GitHub Releases (BUN_MIRROR 可换镜像)
 ensure_bun() {
 	local version="$1"
 	export PATH="$TOOLCHAINS/bun/bin:$PATH"
@@ -271,7 +241,6 @@ ensure_bun() {
 	log "Bun: $(bun --version)"
 }
 
-# ensure_rust — rustup (rsproxy 镜像) + stable minimal,crates 走 rsproxy
 ensure_rust() {
 	export RUSTUP_HOME="$TOOLCHAINS/rustup"
 	export CARGO_HOME="$TOOLCHAINS/cargo"
@@ -298,10 +267,8 @@ EOF
 	log "Cargo: $(cargo --version)"
 }
 
-# ensure_cmake <最低版本> — 系统版本够用则用之,否则装用户态 Kitware 版
 ensure_cmake() {
 	local min="$1" have=""
-	# 注意: cmake 可能不存在,管道需容忍 127,否则 pipefail 会先于安装杀死脚本
 	have=$( { cmake --version 2>/dev/null || true; } | sed -n 's/^cmake version //p' | head -n1)
 	if [ -n "$have" ] && [ "$(printf '%s\n' "$min" "$have" | sort -V | head -n1)" = "$min" ]; then
 		log "CMake: $have (system)"
