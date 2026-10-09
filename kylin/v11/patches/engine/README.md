@@ -10,13 +10,25 @@
 
 ## 补丁清单
 
-### 001 — Wayland 映射标记 (桌面层序时序)
+### 001 — Wayland 就绪 socket (桌面层序时序)
 
-引擎 layer surface 首次收到 configure 时向 stderr 打一行
-`[lwe] wayland output mapped`, 作为"表面已进入合成器场景"的确定性信号;
-GUI 后端 (pkg/background.WatchEngine) 经日志流捕获该行后执行 `Reorder()`
-重启 peony, 使桌面图标层抬回引擎上方 (同层内后映射者居上)。涉及
+引擎 layer surface 首次收到 configure 时,向环境变量 `LWE_READY_SOCKET`
+指向的抽象 unixgram socket 发一个 `READY=1\n` 数据报 (sd_notify 风格,
+best-effort:env 未设即静默跳过,独立 CLI 运行零影响),并保留一行
+`[lwe] wayland output mapped` stderr 诊断。GUI 后端
+(pkg/background.WatchEngine) 创建该 socket 并经进程环境注入
+(上游 processManager 不设 cmd.Env,子进程继承后端环境),收到数据报
+后执行 `Reorder()` 重启 peony,使桌面图标层抬回引擎上方 (同层内后映射
+者居上)。相比旧版日志标记方案:类型化事件、无文本解析、无
+ingest→log→ingest 回路的结构风险、日志开关不影响触发。涉及
 `WaylandOutputViewport.cpp`。
+
+实现要点 (首版曾栽在这里): 抽象 socket 的内核查找按 addrlen 全长比较
+名称, Go 侧绑定的地址是"零前缀 + 名字"的精确长度; 发送端若按
+`sizeof(sockaddr_un)` 传零填充地址, 内核视为不同名称, `sendto` 静默
+`ECONNREFUSED`, 数据报永远不可达 (Go↔Go 单测发现不了这种跨语言坑)。
+故发送端 addrlen 必须是 `offsetof(sun_path) + 1 + strlen(name)` 的
+精确长度, 已按此实现并经真机 C↔Go 往返验证。
 
 ## 历史备注
 

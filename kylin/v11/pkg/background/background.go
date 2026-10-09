@@ -9,14 +9,16 @@
 //	Detach  : 还原用户壁纸
 //
 // 零注入: 与 peony 的全部交互是 gsettings 键与命令行, 均为公开契约。
-// 引擎时序由 WatchEngine 驱动 (引擎出现 → 映射标记 → Reorder), 对 GUI
-// 上游代码零侵入。
+// 引擎时序由 WatchEngine 驱动 (引擎出现 → 就绪 socket 数据报 → Reorder),
+// 对 GUI 上游代码零侵入。
 package background
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,7 +80,9 @@ func isActive() bool {
 }
 
 // Prepare 幂等接管: 首次备份用户壁纸, 确保透明 PNG 在位, 应用并刷新桌面。
+// 同时拉起引擎就绪 socket 并注入环境 (必须在任何引擎拉起之前完成)。
 func Prepare() (string, error) {
+	startReadySocket()
 	if !isActive() {
 		filename, err := gsettings("org.mate.background", "picture-filename")
 		if err != nil {
@@ -272,56 +276,93 @@ func enginePIDs(names []string) map[int]bool {
 	return pids
 }
 
-// ---- 确定性时序: 表面映射标记驱动 ---------------------------------------------
+// ---- 确定性时序: 就绪 socket (sd_notify 风格) ---------------------------------
 //
-// 引擎 (0002-wayland-map-log 补丁) 在 layer surface ack_configure 时向
-// stderr 打一行 mappedMarker, GUI 捕获后经 logger 广播; IngestLine 把它
-// 变成一次性的 reorder 触发。整条链路没有经验睡眠值: reorder 精确发生在
-// "引擎表面已进入合成器场景"这一事件之后。
-const mappedMarker = "[lwe] wayland output mapped"
+// 引擎 (001-wayland-ready-socket 补丁) 在 layer surface 首次 ack_configure
+// 时向 LWE_READY_SOCKET 指向的抽象 unixgram socket 发一个 READY=1 数据报;
+// 本包创建 socket 并经 os.Setenv 注入 —— 引擎子进程继承后端环境 (上游
+// processManager 不设 cmd.Env), 无需侵入拉起代码。数据报到达 → 有待决
+// 代际则投一枚令牌 → WatchEngine 执行 reorder。相比旧版"引擎 stderr 标记
+// 行 → logger.Subscribe → 字符串匹配":类型化事件、无文本解析、与日志管线
+// 彻底解耦 —— 触发路径上没有 logger, ingest→log→ingest 自激回路在结构上
+// 不存在, 日志开关/格式变化不影响触发。
+const readyPayload = "READY=1\n"
 
 var (
-	markerMu       sync.Mutex
-	markerWaitChan chan struct{} // 每个引擎代际一个 (容量 1); nil = 当前无待决 reorder
-	debugLogf      func(string, ...any)
+	tokenMu       sync.Mutex
+	tokenWaitChan chan struct{} // 每个引擎代际一个 (容量 1); nil = 当前无待决 reorder
+	debugLogf     func(string, ...any)
+	readyOnce     sync.Once
 )
 
-// SetDebugLogf 装配 marker 命中的单行诊断出口 (生产由 GUI 侧 002 补丁
-// 接线传 logger.Printf)。仅命中时打点, 任意行不得放行 (见 IngestLine)。
+// SetDebugLogf 装配就绪信号命中的单行诊断出口 (生产由 GUI 侧补丁接线传
+// logger.Printf)。仅命中时打点; 出口虽是 logger, 但触发输入已是 socket,
+// logger 不再回流本包, 无自激递归的通路。
 func SetDebugLogf(f func(string, ...any)) { debugLogf = f }
 
-// IngestLine 供宿主把 GUI logger 的广播行喂进来 (logger.Subscribe 的
-// 转发协程)。只消费 mappedMarker, 且仅在等待标记的代际内生效。
-//
-// 切勿对任意行 debugLog: 出口即 logger, logger 再喂回本函数会形成
-// ingest → log → ingest 自激递归, 日志流被嵌套垃圾瞬间打满并烧 CPU
-// (实测后端 CPU 90%+, 日志页/日志 socket 全被嵌套垃圾淹没)。
-func IngestLine(line string) {
-	markerMu.Lock()
-	ch := markerWaitChan
-	markerMu.Unlock()
-	if ch == nil || !strings.Contains(line, mappedMarker) {
-		return
+// startReadySocket 创建抽象 unixgram 就绪 socket 并注入环境, 拉起读取
+// 协程; sync.Once 幂等 (Prepare 与 WatchEngine 都会调用, 先到先建)。
+// 抽象地址随本进程退出自动消亡, 无文件系统残留; 后端重启即新地址,
+// 旧引擎进程残留的失效 env 变量只会发送失败, 无副作用。
+func startReadySocket() {
+	readyOnce.Do(func() {
+		name := fmt.Sprintf("lwe-forge-ready-%d", os.Getpid())
+		conn, err := net.ListenPacket("unixgram", "@"+name)
+		if err != nil {
+			if debugLogf != nil {
+				debugLogf("[background] readiness socket unavailable (%v); engine map signal disabled", err)
+			}
+			return
+		}
+		os.Setenv("LWE_READY_SOCKET", "@"+name)
+		go func() {
+			buf := make([]byte, 64)
+			for {
+				n, _, err := conn.ReadFrom(buf)
+				if err != nil {
+					return // socket 已关闭
+				}
+				if n < len(readyPayload) || string(buf[:len(readyPayload)]) != readyPayload {
+					continue // 非 READY 数据报 (误投/探测), 丢弃
+				}
+				deliverToken()
+			}
+		}()
+		if debugLogf != nil {
+			debugLogf("[background] engine readiness socket at @%s (env injected)", name)
+		}
+	})
+}
+
+// deliverToken 在有待决代际时投递一枚令牌。容量 1: 同代际多个引擎进程
+// 各发一个数据报, reorder 仍只做一次; WatchEngine 的接收侧是 200ms 轮询
+// select (带 default, 永不泊车), 无缓冲通道的非阻塞发送永远失败 —— 令牌
+// 必丢, reorder 必不触发 (图标被引擎盖住的直接原因), 带缓冲后令牌在此
+// 等待下一拍。
+func deliverToken() {
+	tokenMu.Lock()
+	ch := tokenWaitChan
+	tokenMu.Unlock()
+	if ch == nil {
+		return // 无待决代际: 数据报来自已作废的代际, 丢弃
 	}
 	if debugLogf != nil {
-		// 提示文本不得含 mappedMarker 本身, 否则这行也会再次触发
-		debugLogf("[background] engine surface-mapped marker observed, scheduling desktop reorder")
+		debugLogf("[background] engine surface-ready signal received, scheduling desktop reorder")
 	}
-	// 容量 1 的令牌: WatchEngine 的接收侧是 200ms 轮询 select(带 default,
-	// 永不泊车), 无缓冲通道的非阻塞发送永远失败 —— marker 必丢, reorder
-	// 必不触发 (图标被引擎盖住的直接原因)。带缓冲后令牌在此等待下一拍。
 	select {
 	case ch <- struct{}{}:
 	default:
 	}
 }
 
-// WatchEngine 排程桌面层序: 引擎出现 → 等待映射标记 (由 IngestLine 喂入)
-// → reorder 一次 → 进入 DONE, 直到引擎消失重置代际。引擎中途死亡则放弃
-// 本代并回到引擎等待。存在性轮询 1s 粒度仅用于代际边界判定。
+// WatchEngine 排程桌面层序: 就绪 socket 常备 (Prepare 已提前拉起, 此处
+// 兜底) → 引擎出现 → 等待就绪数据报 → reorder 一次 → 进入 DONE, 直到
+// 引擎消失重置代际。引擎中途死亡则放弃本代并回到引擎等待。存在性轮询
+// 1s 粒度仅用于代际边界判定。
 // engineNames 为引擎二进制的精确基名 (如 "linux-wallpaperengine";
 // 不可作前缀/子串匹配, 否则会命中 linux-wallpaperengine-gui)。
 func WatchEngine(engineNames []string, logf func(string, ...any)) {
+	startReadySocket()
 	prev := map[int]bool{}
 	for {
 		cur := enginePIDs(engineNames)
@@ -329,25 +370,25 @@ func WatchEngine(engineNames []string, logf func(string, ...any)) {
 		// 发生在单次轮询间隙内, 有无边沿会漏检; pid 集合变化则必然可见。
 		generationChanged := len(cur) > 0 && !maps.Equal(cur, prev)
 		if generationChanged {
-			markerMu.Lock()
-			markerWaitChan = make(chan struct{}, 1)
-			markerMu.Unlock()
+			tokenMu.Lock()
+			tokenWaitChan = make(chan struct{}, 1)
+			tokenMu.Unlock()
 
 			deadline := time.After(60 * time.Second)
 			waiting := true
 			for waiting {
 				select {
-				case <-markerWaitChan:
+				case <-tokenWaitChan:
 					waiting = false
 					if err := Reorder(); err != nil && logf != nil {
 						logf("[background] reorder: %v", err)
 					} else if logf != nil {
-						logf("[background] desktop reordered above engine (surface mapped)")
+						logf("[background] desktop reordered above engine (surface ready)")
 					}
 				case <-deadline:
 					waiting = false
 					if logf != nil {
-						logf("[background] engine did not report surface mapping in 60s, generation abandoned")
+						logf("[background] engine did not report surface readiness in 60s, generation abandoned")
 					}
 				default:
 					cur = enginePIDs(engineNames)
@@ -358,11 +399,11 @@ func WatchEngine(engineNames []string, logf func(string, ...any)) {
 					}
 				}
 			}
-			// 代际收尾必须置空: 残留的非 nil 通道会让 IngestLine 继续对每行
-			// 日志做 marker 匹配与调试输出, 若不拦还与 logger 构成自激回路
-			markerMu.Lock()
-			markerWaitChan = nil
-			markerMu.Unlock()
+			// 代际收尾必须置空: 残留的非 nil 通道会让 deliverToken 继续对
+			// 每个数据报做投递与调试输出, 与已作废的代际错配
+			tokenMu.Lock()
+			tokenWaitChan = nil
+			tokenMu.Unlock()
 			cur = enginePIDs(engineNames)
 		}
 		prev = cur

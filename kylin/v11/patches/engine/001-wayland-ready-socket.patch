@@ -1,0 +1,47 @@
+diff --git a/src/WallpaperEngine/Render/Drivers/Output/WaylandOutputViewport.cpp b/src/WallpaperEngine/Render/Drivers/Output/WaylandOutputViewport.cpp
+index 35a9bfa..9ecb3e8 100644
+--- a/src/WallpaperEngine/Render/Drivers/Output/WaylandOutputViewport.cpp
++++ b/src/WallpaperEngine/Render/Drivers/Output/WaylandOutputViewport.cpp
+@@ -13,6 +13,14 @@ extern "C" {
+ #undef namespace
+ #undef static
+ 
++#include <cstddef>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
+ using namespace WallpaperEngine::Render::Drivers;
+ using namespace WallpaperEngine::Render::Drivers::Output;
+ 
+@@ -23,6 +31,27 @@ static void handleLSConfigure (void* data, zwlr_layer_surface_v1* surface, uint3
+     viewport->viewport = { 0, 0, viewport->size.x * viewport->scale, viewport->size.y * viewport->scale };
+     viewport->resize ();
+ 
++    static bool mapAnnounced = false;
++    if (! mapAnnounced) {
++        mapAnnounced = true;
++        fprintf (stderr, "[lwe] wayland output mapped\n");
++        if (const char* readySocket = getenv ("LWE_READY_SOCKET"); readySocket && readySocket[0] == '@') {
++            size_t namelen = strlen (readySocket + 1);
++            if (namelen > 0 && namelen < sizeof (((struct sockaddr_un*) 0)->sun_path) - 1) {
++                int fd = socket (AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0);
++                if (fd >= 0) {
++                    struct sockaddr_un addr;
++                    memset (&addr, 0, sizeof (addr));
++                    addr.sun_family = AF_UNIX;
++                    memcpy (addr.sun_path + 1, readySocket + 1, namelen);
++                    size_t addrlen = offsetof (struct sockaddr_un, sun_path) + 1 + namelen;
++                    sendto (fd, "READY=1\n", 8, MSG_NOSIGNAL, (const struct sockaddr*) &addr, (socklen_t) addrlen);
++                    close (fd);
++                }
++            }
++        }
++    }
++
+     zwlr_layer_surface_v1_ack_configure (surface, serial);
+ }
+ 

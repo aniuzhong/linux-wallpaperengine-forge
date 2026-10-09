@@ -1,29 +1,30 @@
 package background
 
 import (
-	"fmt"
-	"strings"
+	"net"
+	"os"
 	"testing"
+	"time"
 )
 
 // armed 置一个待决代际 (与 WatchEngine 进入等待时一致), 返回还原函数。
 func armed(t *testing.T) {
 	t.Helper()
-	markerMu.Lock()
-	markerWaitChan = make(chan struct{}, 1)
-	markerMu.Unlock()
+	tokenMu.Lock()
+	tokenWaitChan = make(chan struct{}, 1)
+	tokenMu.Unlock()
 	t.Cleanup(func() {
-		markerMu.Lock()
-		markerWaitChan = nil
-		markerMu.Unlock()
+		tokenMu.Lock()
+		tokenWaitChan = nil
+		tokenMu.Unlock()
 	})
 }
 
 // tokenArmed 非阻塞读取令牌: true = 有, false = 无。
 func tokenArmed() bool {
-	markerMu.Lock()
-	ch := markerWaitChan
-	markerMu.Unlock()
+	tokenMu.Lock()
+	ch := tokenWaitChan
+	tokenMu.Unlock()
 	if ch == nil {
 		return false
 	}
@@ -35,75 +36,76 @@ func tokenArmed() bool {
 	}
 }
 
+// startReadySocket 经 sync.Once 幂等; 测试里显式触发并要求环境注入成功。
+func ensureReadySocket(t *testing.T) {
+	t.Helper()
+	startReadySocket()
+	addr := os.Getenv("LWE_READY_SOCKET")
+	if addr == "" {
+		t.Fatal("LWE_READY_SOCKET not set: readiness socket did not start")
+	}
+}
+
+func dialReady(t *testing.T) net.Conn {
+	t.Helper()
+	ensureReadySocket(t)
+	conn, err := net.Dial("unixgram", os.Getenv("LWE_READY_SOCKET"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
 // 核心回归: WatchEngine 的接收侧是带 default 的轮询 select, 永不泊车;
-// 令牌通道必须带缓冲, 否则非阻塞发送永远失败, marker 必丢, reorder 必不
+// 令牌通道必须带缓冲, 否则非阻塞发送永远失败, 数据报必丢, reorder 必不
 // 触发 (桌面图标被引擎壁纸盖住的直接原因)。
-func TestIngestLineDeliversMarkerWithoutParkedReceiver(t *testing.T) {
+func TestReadyDatagramDeliversTokenWithoutParkedReceiver(t *testing.T) {
 	armed(t)
-	IngestLine("Virtual-1: " + mappedMarker)
-	if !tokenArmed() {
-		t.Fatal("marker token was dropped: receiver was not parked on the channel")
+	conn := dialReady(t)
+	if _, err := conn.Write([]byte(readyPayload)); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// 非 marker 行不得产生令牌。
-func TestIngestLineIgnoresNonMarkerLines(t *testing.T) {
-	armed(t)
-	for _, line := range []string{
-		"Starting wallpaper for Virtual-1...",
-		"[ELECTRON] Starting Go backend from Electron",
-		"[lwe] wayland output map", // 前缀相似但不是完整 marker
-		"",
-	} {
-		IngestLine(line)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
 		if tokenArmed() {
-			t.Fatalf("non-marker line produced a token: %q", line)
+			return
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatal("ready datagram was dropped: receiver was not parked on the channel")
 }
 
-// 无待决代际 (markerWaitChan == nil) 时一切输入都被忽略。
-func TestIngestLineIgnoresWhenIdle(t *testing.T) {
-	markerMu.Lock()
-	markerWaitChan = nil
-	markerMu.Unlock()
-	IngestLine("Virtual-1: " + mappedMarker) // 不得 panic
-}
-
-// 调试出口只允许 marker 命中各打一行, 且文本不得包含 marker 本身 ——
-// 否则 debugLogf(→logger) 再喂回 IngestLine 就是自激递归, 会瞬间灌满
-// 日志历史并烧满 CPU (实测后端 90%+)。
-func TestIngestLineDebugLogFiresOnlyOnMarker(t *testing.T) {
+// 非 READY 载荷不得产生令牌。
+func TestReadySocketIgnoresForeignPayload(t *testing.T) {
 	armed(t)
-	var debugged []string
-	SetDebugLogf(func(format string, args ...any) {
-		debugged = append(debugged, fmt.Sprintf(format, args...))
-	})
-	t.Cleanup(func() { SetDebugLogf(nil) })
-
-	IngestLine("some ordinary engine line")
-	if len(debugged) != 0 {
-		t.Fatalf("debug log fired for a non-marker line: %v", debugged)
+	conn := dialReady(t)
+	if _, err := conn.Write([]byte("hello\n")); err != nil {
+		t.Fatal(err)
 	}
-	IngestLine("Virtual-1: " + mappedMarker)
-	if len(debugged) != 1 {
-		t.Fatalf("debug log fired %d times for one marker, want 1: %v", len(debugged), debugged)
-	}
-	if strings.Contains(debugged[0], mappedMarker) {
-		t.Fatalf("debug text echoes the marker itself, would re-trigger: %q", debugged[0])
-	}
-}
-
-// marker 到达后, 第二个 marker 不得再塞令牌 (容量 1, 防代际内重复 reorder)。
-func TestIngestLineTokenCapacityOne(t *testing.T) {
-	armed(t)
-	IngestLine("Virtual-1: " + mappedMarker)
-	IngestLine("Virtual-1: " + mappedMarker)
-	if !tokenArmed() {
-		t.Fatal("token lost after duplicate marker")
-	}
-	// 取走令牌后不应还有余量
+	time.Sleep(100 * time.Millisecond)
 	if tokenArmed() {
-		t.Fatal("duplicate marker queued a second token")
+		t.Fatal("foreign payload produced a token")
+	}
+}
+
+// 无待决代际 (tokenWaitChan == nil) 时数据报被静默丢弃。
+func TestDeliverTokenDropsWhenIdle(t *testing.T) {
+	tokenMu.Lock()
+	tokenWaitChan = nil
+	tokenMu.Unlock()
+	deliverToken() // 不得 panic
+}
+
+// 令牌容量 1: 同代际多个数据报只留一枚, reorder 只做一次。
+func TestDeliverTokenCapacityOne(t *testing.T) {
+	armed(t)
+	deliverToken()
+	deliverToken()
+	if !tokenArmed() {
+		t.Fatal("token lost")
+	}
+	if tokenArmed() {
+		t.Fatal("duplicate datagram queued a second token")
 	}
 }

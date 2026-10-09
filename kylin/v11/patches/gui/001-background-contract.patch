@@ -1,5 +1,5 @@
 diff --git a/src/backend/internal/app/app.go b/src/backend/internal/app/app.go
-index 2f4441b..ab8da73 100644
+index 2f4441b..37c1eab 100644
 --- a/src/backend/internal/app/app.go
 +++ b/src/backend/internal/app/app.go
 @@ -16,6 +16,8 @@ import (
@@ -11,35 +11,23 @@ index 2f4441b..ab8da73 100644
  	"linux-wallpaperengine-gui/src/backend/internal/platform/display"
  	"linux-wallpaperengine-gui/src/backend/internal/platform/fullscreen"
  	"linux-wallpaperengine-gui/src/backend/internal/platform/notification"
-@@ -62,6 +64,27 @@ func (application *App) Run() {
+@@ -62,6 +64,15 @@ func (application *App) Run() {
  		logger.Printf("Failed to initialize config: %v", err)
  	}
  
-+	// V11 desktop wallpaper contract (forge pkg/background): make peony paint
-+	// a transparent wallpaper so the engine shows through the layer below;
-+	// failures surface through the log bridge and never block startup
++	background.SetDebugLogf(func(format string, args ...any) { logger.Printf(format, args...) })
 +	if path, err := background.Prepare(); err != nil {
 +		logger.Printf("[background] prepare failed: %v", err)
 +	} else {
 +		logger.Printf("[background] transparent wallpaper active: %s", path)
 +	}
-+	// Forward backend log lines to the wallpaper contract: the engine's
-+	// surface-mapped marker (0002 patch) arrives through the logger and is
-+	// the deterministic trigger for desktop reordering
-+	background.SetDebugLogf(func(format string, args ...any) { logger.Printf(format, args...) })
-+	logLines := logger.Subscribe()
-+	go func() {
-+		for entry := range logLines {
-+			background.IngestLine(entry.Message)
-+		}
-+	}()
 +	go background.WatchEngine([]string{"linux-wallpaperengine"},
 +		func(format string, args ...any) { logger.Printf(format, args...) })
 +
  	// Start components
  	application.setupDisplayWatcher()
  	application.setupFullscreenDetector()
-@@ -192,6 +215,9 @@ func (application *App) handleSignals() {
+@@ -192,6 +203,9 @@ func (application *App) handleSignals() {
  func (application *App) Cleanup() {
  	logger.Println("Performing cleanup...")
  	application.processManager.KillAll()
