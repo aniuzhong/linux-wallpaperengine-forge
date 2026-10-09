@@ -24,10 +24,6 @@ GUI_PATCH_DIRS=("$TARGET_DIR/patches/gui")
 GO_REPLACE_PKG=lwe-forge/pkg/peony
 GO_REPLACE_DIR="$TARGET_DIR/pkg/peony"
 
-# ---- overlay ----
-# 覆盖进 GUI 源码树的 forge 前端源码
-OVERLAY_DIR="$TARGET_DIR/src/gui-workshop"
-
 # ---- shim ----
 # UKUI 桌面透明注入库 (build-shim.sh, 本片特有入口)
 SHIM_SRC="$TARGET_DIR/src/peony-qt-desktop"

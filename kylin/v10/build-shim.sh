@@ -14,10 +14,10 @@
 #         单独运行。
 #
 set -euo pipefail
-# 本脚本位于片内 (<族>/<版本>/), lib.sh 在仓库根
+# 本脚本位于片内 (<族>/<版本>/), lib.sh 在仓库根; 绝对路径 source,
+# 与 cwd 无关 (cd 到仓库根后再写 ../../lib.sh 会越界到仓库外)
 FORGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$FORGE_DIR"
-source "../../lib.sh"
+source "$FORGE_DIR/lib.sh"
 
 init_log shim
 SHIM_BUILD="$SHIM_SRC/build"

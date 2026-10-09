@@ -14,30 +14,12 @@ build-gui.sh 的 `go mod edit` 在每次构建时现场注入 (apply_patches 每
 
 ## 逻辑补丁清单
 
-### 001 — Workshop 移入 utilityProcess (仅 vite 接线)
-
-Valve 的 breakpad 崩溃钩子只应存在于独立进程。本补丁只剩
-`vite.config.ts` 一处: main 入口扩为 `[main.ts, steamworksWorker.ts]`
-双入口。实现全部在 forge 自有源码 `src/gui-workshop/`
-(`steamworksWorker.ts` worker 进程 + `workshopService.ts` 覆盖上游,
-经 JSON RPC `init`/`call` → `ready`/`result` 通信, 工坊崩溃不波及 UI,
-worker 死亡时优雅降级), 由 build-gui.sh 构建期覆盖安装, 上游演进经
-`UPSTREAM_BASE` hash 告警。历史教训: 早期版本以 700+ 行补丁形态携带
-全部逻辑, 手工改 diff 产生过 7 个静默缺陷 (未定义类名/常量/方法),
-esbuild 不做类型检查全部放行 —— 这正是该逻辑迁出自补丁的原因。
-
 ### 002 — 桌面透明注入接线
 
 `app.go` 三处接线: 导入 pkg/peony、启动时
 `SetBridge(logger.Println)` + `go Attach()` (后台注入 UKUI 桌面壳,
 失败经日志桥浮出不阻断启动)、`Cleanup()` 里 `Detach()` 还原。
 注入逻辑全部在 forge 自有模块 `pkg/peony`, 这里只有接线。
-
-### 003 — 日志历史回放
-
-`logger` 增加一个 500 条的有界环形历史, `Subscribe()` 订阅时先回放再
-直播: 日志页晚于后端启动打开时, 也能看到启动期的日志 (应用初始化、
-壁纸启动、`[inject]` 注入流), 而不是只剩订阅之后的行。
 
 ### 004 — 壁纸引擎终止硬化 + 引擎日志落盘
 
@@ -69,3 +51,22 @@ esbuild 不做类型检查全部放行 —— 这正是该逻辑迁出自补丁�
 `*json.Encoder` 放宽为 `handlers.ResponseWriter` 接口, 由 server 注入
 并发安全实现, 处理器侧零改动。
 
+
+## 历史备注
+
+原 001-workshop-utilityprocess (Workshop 移入 utilityProcess: vite 双
+入口接线 + overlay `src/gui-workshop/` 提供 steamworksWorker.ts 与
+workshopService.ts 覆盖, breakpad 隔离 + 磁盘扫描降级) 已于 2026-10-09
+整体退役删除 —— 本机 Steam 不运行, 该功能常驻降级路径空转; 上游原版
+workshopService 的 steam_api init 失败有 try/catch 兜底, 工坊页空列表
+不波及其它功能。需要 Steam 商店功能时从 git 历史恢复三件套: 本补丁 +
+`src/gui-workshop/` + target.sh 的 `OVERLAY_DIR` 声明 (三者互为存在
+条件, 必须同批恢复; 该功能只在 steam_api 成功初始化后才承担 breakpad
+隔离价值)。历史教训仍有效: 逻辑进自有源码、补丁只留接线, 切勿以大
+diff 形态携带逻辑。
+
+原 003-logs-history-replay (logger 增加 500 条有界环形历史,
+Subscribe 先回放再直播, 日志页晚开可见启动期日志) 已于 2026-10-09
+退役删除 —— 纯体验增强, 非缺陷修复; 摘除后日志页回到上游"只看订阅
+之后的行"的行为, 排障时启动期日志以引擎落盘文件 (004) 与桌面通知为
+准。需要时从 git 历史恢复单文件即可, 与其余补丁零耦合。
