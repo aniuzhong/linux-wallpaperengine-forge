@@ -1,0 +1,13 @@
+diff --git a/src/WallpaperEngine/Render/Objects/CImage.cpp b/src/WallpaperEngine/Render/Objects/CImage.cpp
+index be0baca..b687aa7 100644
+--- a/src/WallpaperEngine/Render/Objects/CImage.cpp
++++ b/src/WallpaperEngine/Render/Objects/CImage.cpp
+@@ -962,7 +962,7 @@ const glm::vec4& CImage::getColor4 () const { return this->m_image.color->value-
+ const glm::vec3& CImage::getCompositeColor () const { return this->m_image.color->value->getVec3 (); }
+ 
+ glm::vec2 CImage::resolveGeometrySize (float sceneWidth, float sceneHeight, glm::vec3& origin) const {
+-    glm::vec2 size = this->getSize ();
++    glm::vec2 size = this->getImage ().model->passthrough ? this->getImage ().size : this->getSize ();
+ 
+     if ((size.x == 0.0f || size.y == 0.0f) && this->m_texture != nullptr) {
+ 	size.x = static_cast<float> (this->m_texture->getRealWidth ());

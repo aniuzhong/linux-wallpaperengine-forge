@@ -1,0 +1,17 @@
+diff --git a/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp b/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp
+index 4e35f5a..ee348f1 100644
+--- a/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp
++++ b/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp
+@@ -136,7 +136,11 @@ TextUniquePtr ObjectParser::parseText (const JSON& it, const Project& project, O
+ 	    .visible = it.user ("visible", project.properties, true),
+ 	    .alignment = it.optional ("horizontalalign", it.optional ("alignment", std::string ("center"))),
+ 	    .verticalalign = it.optional ("verticalalign", std::string ("center")),
+-	    .padding = it.optional ("padding", 0),
++	    .padding = [&] () {
++		const auto value = it.optional ("padding");
++
++		return (!value.has_value () || !value->is_number ()) ? 0 : value->get<int> ();
++	    } (),
+ 	}
+     );
+ }

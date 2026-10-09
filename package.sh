@@ -26,16 +26,31 @@ mkdir -p "$STAGE/bin"
 
 cp -a "$GUI_PAYLOAD" "$STAGE/gui"
 cp -a "$ENG_PAYLOAD/." "$STAGE/engine/"
-ln -s ../engine/linux-wallpaperengine "$STAGE/bin/linux-wallpaperengine"
 cp -a "$TARGET_DIR/packaging/." "$STAGE/"
+if [ ! -e "$STAGE/bin/linux-wallpaperengine" ]; then
+	ln -s ../engine/linux-wallpaperengine "$STAGE/bin/linux-wallpaperengine"
+fi
+if [ -n "${INTEGRATION_STAGE:-}" ] && [ -d "$OUTPUT/integration" ]; then
+	cp -a "$OUTPUT/integration/." "$STAGE/"
+fi
 
 {
 	echo "suite  : lwe-forge"
 	echo "gui    : $GUI_VER (ref $GUI_REF)"
 	echo "engine : ref $ENGINE_REF"
-	for f in "$STAGE"/lib/*; do
-		[ -e "$f" ] || continue
-		echo "integration: $(basename "$f")"
+	for p in "$STAGE"/*; do
+		b=$(basename "$p")
+		case "$b" in
+			gui|engine|bin|run-gui.sh|VERSION|README.md) continue ;;
+		esac
+		if [ -f "$p" ]; then
+			echo "integration: $b"
+		elif [ -d "$p" ]; then
+			for f in "$p"/*; do
+				[ -e "$f" ] || continue
+				echo "integration: $(basename "$f")"
+			done
+		fi
 	done
 	echo "patches:"
 	for d in "${GUI_PATCH_DIRS[@]}"; do

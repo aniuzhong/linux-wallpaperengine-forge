@@ -1,0 +1,50 @@
+diff --git a/src/WallpaperEngine/Data/Model/DynamicValue.cpp b/src/WallpaperEngine/Data/Model/DynamicValue.cpp
+index d41028f..63fea3d 100644
+--- a/src/WallpaperEngine/Data/Model/DynamicValue.cpp
++++ b/src/WallpaperEngine/Data/Model/DynamicValue.cpp
+@@ -174,7 +174,9 @@ void DynamicValue::update (const std::string& newValue, UpdateSource source) {
+     this->m_type = UnderlyingType::String;
+ 
+     if (this->m_condition.has_value ()) {
+-	const bool boolValue = this->m_condition.value ().condition == newValue;
++	const bool boolValue = (this->m_condition.value ().condition == newValue)
++				   ? this->m_conditionBase
++				   : !this->m_conditionBase;
+ 	this->m_vec2 = glm::vec2 (boolValue ? 1.0f : 0.0f);
+ 	this->m_vec3 = glm::vec3 (boolValue ? 1.0f : 0.0f);
+ 	this->m_vec4 = glm::vec4 (boolValue ? 1.0f : 0.0f);
+@@ -211,7 +213,9 @@ void DynamicValue::update (const DynamicValue& other, UpdateSource source) {
+     this->m_type = other.getType ();
+ 
+     if (this->m_condition.has_value () && other.getType () == UnderlyingType::String) {
+-	const bool boolValue = this->m_condition.value ().condition == other.getString ();
++	const bool boolValue = (this->m_condition.value ().condition == other.getString ())
++				   ? this->m_conditionBase
++				   : !this->m_conditionBase;
+ 	this->m_vec2 = glm::vec2 (boolValue ? 1.0f : 0.0f);
+ 	this->m_vec3 = glm::vec3 (boolValue ? 1.0f : 0.0f);
+ 	this->m_vec4 = glm::vec4 (boolValue ? 1.0f : 0.0f);
+@@ -282,7 +286,10 @@ void DynamicValue::disconnect () {
+     this->m_connections.clear ();
+ }
+ 
+-void DynamicValue::attachCondition (const ConditionInfo& condition) { this->m_condition = condition; }
++void DynamicValue::attachCondition (const ConditionInfo& condition) {
++    this->m_condition = condition;
++    this->m_conditionBase = this->getBool ();
++}
+ 
+ void DynamicValue::setScriptSource (const std::string& source) { this->m_scriptSource = source; }
+ 
+diff --git a/src/WallpaperEngine/Data/Model/DynamicValue.h b/src/WallpaperEngine/Data/Model/DynamicValue.h
+index 4843dca..15c5cb0 100644
+--- a/src/WallpaperEngine/Data/Model/DynamicValue.h
++++ b/src/WallpaperEngine/Data/Model/DynamicValue.h
+@@ -157,6 +157,7 @@ private:
+     std::string m_string;
+     UnderlyingType m_type = Null;
+     std::optional<ConditionInfo> m_condition = std::nullopt;
++    bool m_conditionBase = false;
+     /** All the properties this script takes in */
+     std::map<std::string, UserSettingUniquePtr> m_properties;
+ };

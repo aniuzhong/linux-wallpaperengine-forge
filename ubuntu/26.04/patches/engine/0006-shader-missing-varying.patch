@@ -1,0 +1,162 @@
+diff --git a/src/WallpaperEngine/Render/Shaders/GLSLContext.cpp b/src/WallpaperEngine/Render/Shaders/GLSLContext.cpp
+index dd4f4d4..4518da7 100644
+--- a/src/WallpaperEngine/Render/Shaders/GLSLContext.cpp
++++ b/src/WallpaperEngine/Render/Shaders/GLSLContext.cpp
+@@ -2,7 +2,10 @@
+ #include "WallpaperEngine/Logging/Log.h"
+ 
+ #include <cassert>
++#include <cctype>
++#include <map>
+ #include <memory>
++#include <sstream>
+ 
+ #include "SPIRV/GlslangToSpv.h"
+ #include "glslang/Include/ResourceLimits.h"
+@@ -11,6 +14,129 @@
+ 
+ using namespace WallpaperEngine::Render::Shaders;
+ 
++static bool isIdentChar (char c) {
++    return static_cast<bool> (std::isalnum (static_cast<unsigned char> (c))) || c == '_';
++}
++
++static std::string stripComments (const std::string& source) {
++    std::string result;
++    result.reserve (source.size ());
++
++    for (size_t i = 0; i < source.size ();) {
++	if (i + 1 < source.size () && source[i] == '/' && source[i + 1] == '/') {
++	    while (i < source.size () && source[i] != '\n') {
++		i++;
++	    }
++	} else if (i + 1 < source.size () && source[i] == '/' && source[i + 1] == '*') {
++	    i += 2;
++
++	    while (i + 1 < source.size () && !(source[i] == '*' && source[i + 1] == '/')) {
++		if (source[i] == '\n') {
++		    result += '\n';
++		}
++
++		i++;
++	    }
++
++	    i += 2;
++	} else {
++	    result += source[i++];
++	}
++    }
++
++    return result;
++}
++
++static std::map<std::string, std::string> declaredVaryings (const std::string& source) {
++    std::map<std::string, std::string> result;
++
++    for (size_t pos = source.find ("varying"); pos != std::string::npos; pos = source.find ("varying", pos)) {
++	if ((pos > 0 && isIdentChar (source[pos - 1])) || isIdentChar (source[pos + 7])) {
++	    pos += 7;
++	    continue;
++	}
++
++	size_t lineStart = source.rfind ('\n', pos);
++	lineStart = (lineStart == std::string::npos) ? 0 : lineStart + 1;
++
++	while (lineStart < pos && (source[lineStart] == ' ' || source[lineStart] == '\t')) {
++	    lineStart++;
++	}
++
++	if (source[lineStart] == '#') {
++	    pos += 7;
++	    continue;
++	}
++
++	const size_t end = source.find (';', pos);
++
++	if (end == std::string::npos) {
++	    break;
++	}
++
++	const std::string declaration = source.substr (pos + 7, end - pos - 7);
++
++	if (declaration.find ('#') != std::string::npos) {
++	    pos = end + 1;
++	    continue;
++	}
++
++	std::istringstream stream (declaration);
++	std::string type, name;
++
++	if (stream >> type) {
++	    while (stream >> name) {
++		if (name.back () == ',') {
++		    name.pop_back ();
++		}
++
++		if (!name.empty () && name != ",") {
++		    result.emplace (name, type);
++		}
++	    }
++	}
++
++	pos = end + 1;
++    }
++
++    return result;
++}
++
++static std::string injectMissingVaryings (const std::string& vertex, const std::string& fragment) {
++    const auto varyings = declaredVaryings (stripComments (vertex));
++    const auto code = stripComments (fragment);
++    const auto existing = declaredVaryings (code);
++    std::string injections;
++
++    for (const auto& [name, type] : varyings) {
++	if (existing.contains (name)) {
++	    continue;
++	}
++
++	for (size_t pos = code.find (name); pos != std::string::npos; pos = code.find (name, pos + name.size ())) {
++	    if ((pos == 0 || !isIdentChar (code[pos - 1])) &&
++		(pos + name.size () >= code.size () || !isIdentChar (code[pos + name.size ()]))) {
++		injections += "varying " + type + " " + name + ";\n";
++		break;
++	    }
++	}
++    }
++
++    if (injections.empty ()) {
++	return fragment;
++    }
++
++    size_t lineStart = 0;
++    const size_t mainPos = fragment.find ("void main");
++
++    if (mainPos != std::string::npos) {
++	const size_t newline = fragment.rfind ('\n', mainPos);
++	lineStart = (newline == std::string::npos) ? 0 : newline + 1;
++    }
++
++    return fragment.substr (0, lineStart) + injections + fragment.substr (lineStart);
++}
++
+ TBuiltInResource BuiltInResource = { .maxLights = 32,
+ 				     .maxClipPlanes = 6,
+ 				     .maxTextureUnits = 32,
+@@ -132,6 +258,7 @@ GLSLContext& GLSLContext::get () {
+ }
+ 
+ std::pair<std::string, std::string> GLSLContext::toGlsl (const std::string& vertex, const std::string& fragment) {
++    const std::string fixedFragment = injectMissingVaryings (vertex, fragment);
+     glslang::TShader vertexShader (EShLangVertex);
+ 
+     const char* vertexSource = vertex.c_str ();
+@@ -149,7 +276,7 @@ std::pair<std::string, std::string> GLSLContext::toGlsl (const std::string& vert
+     }
+     glslang::TShader fragmentShader (EShLangFragment);
+ 
+-    const char* fragmentSource = fragment.c_str ();
++    const char* fragmentSource = fixedFragment.c_str ();
+     fragmentShader.setStrings (&fragmentSource, 1);
+     fragmentShader.setEntryPoint ("main");
+     fragmentShader.setEnvInput (glslang::EShSourceGlsl, EShLangFragment, glslang::EShClientOpenGL, 330);
