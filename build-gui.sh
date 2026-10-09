@@ -6,6 +6,8 @@ source ./lib.sh
 init_log gui
 GUI_SRC="$THIRD_PARTY/linux-wallpaperengine-gui"
 
+ensure_dep_shims
+
 log "Probing system dependencies..."
 probe_reset
 check_cmd git git
@@ -21,21 +23,23 @@ probe_report
 ensure_repo "https://github.com/AzPepoze/linux-wallpaperengine-gui" "$GUI_SRC" "$GUI_REF"
 apply_patches "$GUI_SRC" "${GUI_PATCH_DIRS[@]}"
 
-for f in "$OVERLAY_DIR"/*.ts; do
-	name=$(basename "$f")
-	cp -f "$f" "$GUI_SRC/src/frontend/main/services/$name"
-	log "Overlay: src/frontend/main/services/$name <- src/gui-workshop/"
-done
-while read -r hash path; do
-	case "$hash" in \#*|"") continue ;; esac
-	[ -n "$path" ] || continue
-	cur=$(git -C "$GUI_SRC" rev-parse "HEAD:$path" 2>/dev/null || echo "")
-	if [ -n "$cur" ] && [ "$cur" != "$hash" ]; then
-		warn "Upstream file evolved since overlay was authored: $path"
-		warn "  overlay base: $hash / pinned HEAD: $cur"
-		warn "  review and merge upstream changes into src/gui-workshop/"
-	fi
-done < "$OVERLAY_DIR/UPSTREAM_BASE"
+if [ -n "${OVERLAY_DIR:-}" ]; then
+	for f in "$OVERLAY_DIR"/*.ts; do
+		name=$(basename "$f")
+		cp -f "$f" "$GUI_SRC/src/frontend/main/services/$name"
+		log "Overlay: src/frontend/main/services/$name <- $OVERLAY_DIR/"
+	done
+	while read -r hash path; do
+		case "$hash" in \#*|"") continue ;; esac
+		[ -n "$path" ] || continue
+		cur=$(git -C "$GUI_SRC" rev-parse "HEAD:$path" 2>/dev/null || echo "")
+		if [ -n "$cur" ] && [ "$cur" != "$hash" ]; then
+			warn "Upstream file evolved since overlay was authored: $path"
+			warn "  overlay base: $hash / pinned HEAD: $cur"
+			warn "  review and merge upstream changes into $OVERLAY_DIR/"
+		fi
+	done < "$OVERLAY_DIR/UPSTREAM_BASE"
+fi
 
 GO_VERSION="${GO_VERSION:-$(sed -n 's/^go \([0-9][0-9.]*\)$/\1/p' "$GUI_SRC/src/backend/go.mod" | head -n1)}"
 [ -n "$GO_VERSION" ] || die "Cannot parse Go version from go.mod; set GO_VERSION env explicitly"
@@ -73,10 +77,12 @@ log "Overriding steamworks native module with local build ..."
 cp "$SWJS_DIST/steamworksjs.linux-x64-gnu.node" "$NODE_SWJS/"
 cp "$SWJS_DIST/libsteam_api.so" "$NODE_SWJS/"
 
-log "Wiring $GO_REPLACE_PKG module into GUI go.mod ..."
-(cd "$GUI_SRC/src/backend" && go mod edit \
-	-require="$GO_REPLACE_PKG@v0.0.0" \
-	-replace="$GO_REPLACE_PKG=$GO_REPLACE_DIR")
+if [ -n "${GO_REPLACE_PKG:-}" ]; then
+	log "Wiring $GO_REPLACE_PKG module into GUI go.mod ..."
+	(cd "$GUI_SRC/src/backend" && go mod edit \
+		-require="$GO_REPLACE_PKG@v0.0.0" \
+		-replace="$GO_REPLACE_PKG=$GO_REPLACE_DIR")
+fi
 
 log "Type-checking frontend (tsc --noEmit) ..."
 (cd "$GUI_SRC" && ./node_modules/.bin/tsc --noEmit)

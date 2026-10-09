@@ -163,10 +163,17 @@ probe_reset() {
 }
 
 check_cmd() {
-	if ! command -v "$1" >/dev/null 2>&1; then
-		warn "Missing command: $1 (package: $2)"
-		PROBE_MISSING+=("$2")
-	fi
+	local c oldIFS=$IFS
+	IFS=:
+	for c in $1; do
+		if command -v "$c" >/dev/null 2>&1; then
+			IFS=$oldIFS
+			return 0
+		fi
+	done
+	IFS=$oldIFS
+	warn "Missing command: $1 (package: $2)"
+	PROBE_MISSING+=("$2")
 }
 
 check_lib() {
@@ -185,10 +192,17 @@ check_lib() {
 }
 
 check_header() {
-	if [ ! -e "$1" ]; then
-		warn "Missing header: $1 (package: $2)"
-		PROBE_MISSING+=("$2")
-	fi
+	local p oldIFS=$IFS
+	IFS=:
+	for p in $1; do
+		if [ -e "$p" ]; then
+			IFS=$oldIFS
+			return 0
+		fi
+	done
+	IFS=$oldIFS
+	warn "Missing header: $1 (package: $2)"
+	PROBE_MISSING+=("$2")
 }
 
 probe_report() {
@@ -288,3 +302,9 @@ ensure_cmake() {
 	rm -f /tmp/forge-cmake.tar.gz
 	log "CMake: $(cmake --version | head -n1 | awk '{print $3}') (user-space)"
 }
+
+ensure_dep_shims() { :; }
+
+if [ -f "$TARGET_DIR/env.sh" ]; then
+	. "$TARGET_DIR/env.sh"
+fi
