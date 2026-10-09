@@ -1,0 +1,64 @@
+diff --git a/src/backend/internal/app/app.go b/src/backend/internal/app/app.go
+index 2f4441b..ab8da73 100644
+--- a/src/backend/internal/app/app.go
++++ b/src/backend/internal/app/app.go
+@@ -16,6 +16,8 @@ import (
+ 	"linux-wallpaperengine-gui/src/backend/internal/core/playlist"
+ 	"linux-wallpaperengine-gui/src/backend/internal/core/wallpaper"
+ 	"linux-wallpaperengine-gui/src/backend/internal/logger"
++
++	"lwe-forge/pkg/background"
+ 	"linux-wallpaperengine-gui/src/backend/internal/platform/display"
+ 	"linux-wallpaperengine-gui/src/backend/internal/platform/fullscreen"
+ 	"linux-wallpaperengine-gui/src/backend/internal/platform/notification"
+@@ -62,6 +64,27 @@ func (application *App) Run() {
+ 		logger.Printf("Failed to initialize config: %v", err)
+ 	}
+ 
++	// V11 desktop wallpaper contract (forge pkg/background): make peony paint
++	// a transparent wallpaper so the engine shows through the layer below;
++	// failures surface through the log bridge and never block startup
++	if path, err := background.Prepare(); err != nil {
++		logger.Printf("[background] prepare failed: %v", err)
++	} else {
++		logger.Printf("[background] transparent wallpaper active: %s", path)
++	}
++	// Forward backend log lines to the wallpaper contract: the engine's
++	// surface-mapped marker (0002 patch) arrives through the logger and is
++	// the deterministic trigger for desktop reordering
++	background.SetDebugLogf(func(format string, args ...any) { logger.Printf(format, args...) })
++	logLines := logger.Subscribe()
++	go func() {
++		for entry := range logLines {
++			background.IngestLine(entry.Message)
++		}
++	}()
++	go background.WatchEngine([]string{"linux-wallpaperengine"},
++		func(format string, args ...any) { logger.Printf(format, args...) })
++
+ 	// Start components
+ 	application.setupDisplayWatcher()
+ 	application.setupFullscreenDetector()
+@@ -192,6 +215,9 @@ func (application *App) handleSignals() {
+ func (application *App) Cleanup() {
+ 	logger.Println("Performing cleanup...")
+ 	application.processManager.KillAll()
++	if err := background.Detach(); err != nil {
++		logger.Printf("[background] detach: %v", err)
++	}
+ 	fullscreen.StopDetector()
+ 	electron.Stop()
+ 	if _, err := os.Stat(application.socketPath); err == nil {
+diff --git a/src/backend/internal/config/config.go b/src/backend/internal/config/config.go
+index d5a65f7..25f17b2 100644
+--- a/src/backend/internal/config/config.go
++++ b/src/backend/internal/config/config.go
+@@ -44,7 +44,7 @@ func init() {
+ 		NoAudioProcessing:   false,
+ 		Scaling:             "default",
+ 		Clamping:            "clamp",
+-		Layer:               "bottom",
++		Layer:               "background",
+ 		ScreenshotDelay:     5,
+ 		Properties:          make(map[string]string),
+ 		WallpaperProperties: make(map[string]map[string]string),
