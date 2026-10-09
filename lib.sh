@@ -263,13 +263,13 @@ ensure_rust() {
 	log "Installing Rust toolchain (rsproxy mirror) ..."
 	export RUSTUP_DIST_SERVER
 	export RUSTUP_UPDATE_ROOT
-	fetch "/tmp/forge-rustup-init" \
+	fetch "/tmp/rustup-init" \
 		"$RUSTUP_UPDATE_ROOT/dist/x86_64-unknown-linux-gnu/rustup-init" \
 		"https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init" \
 		|| die "Failed to download rustup-init"
-	chmod +x /tmp/forge-rustup-init
-	/tmp/forge-rustup-init -y --profile minimal --default-toolchain stable --no-modify-path
-	rm -f /tmp/forge-rustup-init
+	chmod +x /tmp/rustup-init
+	/tmp/rustup-init -y --profile minimal --default-toolchain stable --no-modify-path
+	rm -f /tmp/rustup-init
 	mkdir -p "$CARGO_HOME"
 	cat > "$CARGO_HOME/config.toml" <<'EOF'
 [source.crates-io]
