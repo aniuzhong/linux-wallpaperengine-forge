@@ -49,7 +49,7 @@ git -C "$ENGINE_SRC" submodule update --init --recursive
 if [ "${FORGE_SKIP_PATCHES:-0}" = "1" ]; then
 	warn "FORGE_SKIP_PATCHES=1 — building UNPATCHED upstream (smoke/experiment build)"
 else
-	apply_patches "$ENGINE_SRC" "${ENGINE_PATCH_DIRS[@]}"
+	apply_patch_list "$ENGINE_SRC" "$ENGINE_PATCH_LIST" "$FORGE_DIR/patches/engine"
 fi
 
 ensure_cmake 3.22

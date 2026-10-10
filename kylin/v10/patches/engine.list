@@ -1,0 +1,13 @@
+gcc10-cxx20-compat
+x11-desktop-window
+scene-native-resolution
+varying-injection
+tolerant-parsers
+optional-wayland
+x11-fullscreen-windowid-fix
+wayland-118-compat
+color4-alpha-fold
+conditional-visibility-inverse
+passthrough-declared-size
+no-anisotropy-on-nearest
+default-uvs-center-crop

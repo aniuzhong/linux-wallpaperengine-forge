@@ -123,35 +123,32 @@ ensure_repo() {
 	log "Source ready: $(basename "$dir") @ ${ref:0:9}"
 }
 
-apply_patches() {
-	local repo="$1"
-	shift
-	local dir patch name f
-	git -C "$repo" checkout -- . 2>/dev/null || true
-	shopt -s nullglob
+apply_patch_list() {
+	local repo_src=$1 list=$2 pool=$3
+	local dir patch id
+	git -C "$repo_src" checkout -- . 2>/dev/null || true
 	local -a all_patches=()
-	for dir in "$@"; do
-		for patch in "$dir"/*.patch; do
-			all_patches+=("$patch")
-		done
-	done
-	local newfiles=""
-	if [ ${#all_patches[@]} -gt 0 ]; then
-		newfiles=$(awk '/^--- \/dev\/null$/{nl=1; next} nl==1 && /^\+\+\+ b\//{sub(/^\+\+\+ b\//, ""); print; nl=0; next} {nl=0}' "${all_patches[@]}" | sort -u)
+	while IFS= read -r id; do
+		[ -n "$id" ] || continue
+		all_patches+=("$pool/$id.patch")
+	done < "$list"
+	if [ ${#all_patches[@]} -eq 0 ]; then
+		log "Patch list is empty: $list"
+		return 0
 	fi
+	local newfiles=""
+	newfiles=$(awk '/^--- \/dev\/null$/{nl=1; next} nl==1 && /^\+\+\+ b\//{sub(/^\+\+\+ b\//, ""); print; nl=0; next} {nl=0}' "${all_patches[@]}" | sort -u)
 	for f in $newfiles; do
-		rm -f "$repo/$f"
+		rm -f "$repo_src/$f"
 	done
 	for patch in "${all_patches[@]}"; do
-		name=$(basename "$patch")
-		if (cd "$repo" && git apply --check "$patch" 2>/dev/null); then
-			(cd "$repo" && git apply "$patch")
-			log "Applying patch: $name"
+		if (cd "$repo_src" && git apply --check "$patch" 2>/dev/null); then
+			(cd "$repo_src" && git apply "$patch")
+			log "Applying patch: $(basename "$patch" .patch)"
 		else
 			die "Cannot apply patch (upstream may have moved): $patch"
 		fi
 	done
-	shopt -u nullglob
 }
 
 PROBE_MISSING=()

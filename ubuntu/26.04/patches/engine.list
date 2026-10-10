@@ -1,0 +1,10 @@
+x11-desktop-window
+scene-native-resolution
+color4-alpha-fold
+conditional-visibility-inverse
+tolerant-parsers
+varying-injection
+passthrough-declared-size
+x11-fullscreen-windowid-fix
+no-anisotropy-on-nearest
+default-uvs-center-crop

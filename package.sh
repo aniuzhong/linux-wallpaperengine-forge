@@ -53,12 +53,8 @@ fi
 		fi
 	done
 	echo "patches:"
-	for d in "${GUI_PATCH_DIRS[@]}"; do
-		for p in "$d"/*.patch; do [ -e "$p" ] || continue; echo "  gui/$(basename "$p")"; done
-	done | sort
-	for d in "${ENGINE_PATCH_DIRS[@]}"; do
-		for p in "$d"/*.patch; do [ -e "$p" ] || continue; echo "  engine/$(basename "$p")"; done
-	done | sort
+	[ -f "${GUI_PATCH_LIST:-}" ] && sed "s|^|  gui/|" "$GUI_PATCH_LIST" | sort
+	[ -f "${ENGINE_PATCH_LIST:-}" ] && sed "s|^|  engine/|" "$ENGINE_PATCH_LIST" | sort
 	echo "built  : $(date '+%F %T %Z')"
 } > "$STAGE/VERSION"
 

@@ -13,10 +13,9 @@ export CXX="${CXX:-g++-10}"
 INTEGRATION_BUILD="$TARGET_DIR/build-shim.sh"
 
 # ---- 补丁 ----
-# 公共层在前、片内在后, 数组顺序即套用序; 公共层当前为空
-# (补丁生于片内, 晋升公共须凭证据, 见 patches/README.md)
-ENGINE_PATCH_DIRS=("$TARGET_DIR/patches/engine")
-GUI_PATCH_DIRS=("$TARGET_DIR/patches/gui")
+# 有序清单指向共享池 patches/<repo>/<语义id>.patch
+ENGINE_PATCH_LIST="$TARGET_DIR/patches/engine.list"
+GUI_PATCH_LIST="$TARGET_DIR/patches/gui.list"
 
 # ---- Go 接线 ----
 # GUI 后端经 go.mod replace 接入的 forge 模块: module 路径不变 (烤在补丁

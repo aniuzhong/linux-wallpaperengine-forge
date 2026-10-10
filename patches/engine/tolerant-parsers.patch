@@ -1,5 +1,5 @@
 diff --git a/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp b/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp
-index 4e35f5a..0165080 100644
+index 4e35f5a..1d21829 100644
 --- a/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp
 +++ b/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp
 @@ -69,13 +69,13 @@ ObjectUniquePtr ObjectParser::parse (const JSON& it, const Project& project) {
@@ -19,6 +19,19 @@ index 4e35f5a..0165080 100644
  	sLog.error ("VolumeLight objects are not supported yet");
      } else {
  	if (!it.optional ("solid", false)) {
+@@ -136,7 +136,11 @@ TextUniquePtr ObjectParser::parseText (const JSON& it, const Project& project, O
+ 	    .visible = it.user ("visible", project.properties, true),
+ 	    .alignment = it.optional ("horizontalalign", it.optional ("alignment", std::string ("center"))),
+ 	    .verticalalign = it.optional ("verticalalign", std::string ("center")),
+-	    .padding = it.optional ("padding", 0),
++	    .padding = [&] () {
++		const auto value = it.optional ("padding");
++
++		return (!value.has_value () || !value->is_number ()) ? 0 : value->get<int> ();
++	    } (),
+ 	}
+     );
+ }
 diff --git a/src/WallpaperEngine/Data/Parsers/WallpaperParser.cpp b/src/WallpaperEngine/Data/Parsers/WallpaperParser.cpp
 index c108a0d..778f8f1 100644
 --- a/src/WallpaperEngine/Data/Parsers/WallpaperParser.cpp

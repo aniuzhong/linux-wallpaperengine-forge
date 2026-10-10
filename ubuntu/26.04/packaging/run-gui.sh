@@ -70,6 +70,9 @@ if [ -f "$SANDBOX" ]; then
 	elif findmnt -no OPTIONS --target "$SANDBOX" 2>/dev/null | grep -qw nosuid; then
 		echo "run-gui: WARNING: mount point is nosuid (e.g. /tmp), sandbox unavailable, falling back to --no-sandbox; extract the suite under your home or /opt instead" >&2
 		NO_SANDBOX=(--no-sandbox)
+	elif [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ]; then
+		echo "run-gui: WARNING: kernel restricts unprivileged userns (AppArmor, post-update default on Ubuntu 24.04+); the setuid sandbox zygote dies with EINVAL, falling back to --no-sandbox" >&2
+		NO_SANDBOX=(--no-sandbox)
 	fi
 fi
 # --no-sandbox on argv only protects the first Electron (the launcher): the

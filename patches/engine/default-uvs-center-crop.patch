@@ -1,0 +1,47 @@
+diff --git a/src/WallpaperEngine/Render/WallpaperState.cpp b/src/WallpaperEngine/Render/WallpaperState.cpp
+index 6f9dc1a..5ed6a67 100644
+--- a/src/WallpaperEngine/Render/WallpaperState.cpp
++++ b/src/WallpaperEngine/Render/WallpaperState.cpp
+@@ -111,25 +111,6 @@ template <> void WallpaperState::updateTextureUVs<WallpaperState::TextureUVsScal
+     }
+ }
+ 
+-template <> void WallpaperState::updateTextureUVs<WallpaperState::TextureUVsScaling::DefaultUVs> () {
+-    this->resetUVs ();
+-
+-    const int viewportWidth = this->getViewportWidth ();
+-    const int viewportHeight = this->getViewportHeight ();
+-    const int projectionWidth = this->getProjectionWidth ();
+-    const int projectionHeight = this->getProjectionHeight ();
+-
+-    if ((viewportHeight > viewportWidth && projectionWidth >= projectionHeight)
+-	|| (viewportWidth > viewportHeight && projectionHeight > projectionWidth)) {
+-	updateUs (projectionWidth, projectionHeight);
+-    }
+-
+-    if ((viewportWidth > viewportHeight && projectionWidth >= projectionHeight)
+-	|| (viewportHeight > viewportWidth && projectionHeight > projectionWidth)) {
+-	updateVs (projectionWidth, projectionHeight);
+-    }
+-}
+-
+ template <WallpaperState::TextureUVsScaling T> void WallpaperState::updateTextureUVs () {
+     sLog.exception (
+ 	"Using generic template for scaling is not allowed. Write specialization template for your scaling mode.\
+@@ -167,15 +148,13 @@ void WallpaperState::updateState (
+ 	case WallpaperState::TextureUVsScaling::StretchUVs:
+ 	    this->updateTextureUVs<WallpaperState::TextureUVsScaling::StretchUVs> ();
+ 	    break;
++	case WallpaperState::TextureUVsScaling::DefaultUVs:
+ 	case WallpaperState::TextureUVsScaling::ZoomFillUVs:
+ 	    this->updateTextureUVs<WallpaperState::TextureUVsScaling::ZoomFillUVs> ();
+ 	    break;
+ 	case WallpaperState::TextureUVsScaling::ZoomFitUVs:
+ 	    this->updateTextureUVs<WallpaperState::TextureUVsScaling::ZoomFitUVs> ();
+ 	    break;
+-	case WallpaperState::TextureUVsScaling::DefaultUVs:
+-	    this->updateTextureUVs<WallpaperState::TextureUVsScaling::DefaultUVs> ();
+-	    break;
+ 	default:
+ 	    sLog.exception (
+ 		"Switch case for specified scaling mode doesn't exist. Add your realisation in switch statement.\

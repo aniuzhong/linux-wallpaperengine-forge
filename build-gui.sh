@@ -21,7 +21,7 @@ check_lib ayatana-appindicator3-0.1 libayatana-appindicator3-dev
 probe_report
 
 ensure_repo "https://github.com/AzPepoze/linux-wallpaperengine-gui" "$GUI_SRC" "$GUI_REF"
-apply_patches "$GUI_SRC" "${GUI_PATCH_DIRS[@]}"
+apply_patch_list "$GUI_SRC" "$GUI_PATCH_LIST" "$FORGE_DIR/patches/gui"
 
 if [ -n "${OVERLAY_DIR:-}" ]; then
 	for f in "$OVERLAY_DIR"/*.ts; do
