@@ -75,17 +75,12 @@ ranges 用法上零修改 (编译器统一钉在 gcc-10, 见 lib.sh)。本补丁
   libstdc++ 的传递包含拿到 `shared_ptr`/`make_unique`, gcc-10 下不再
   传递可得 (`<ranges>` 保留, 本文件确实在用)。
 
-### optional-wayland 【kylin/v10】
+### x11-only-build 【kylin/v10】
 
-wayland 开发库缺失时仅构建 X11 后端 (麒麟交付目标本就是 X11)。涉及
-`CMakeLists.txt`。v11 恰恰依赖 wayland 驱动, 必须不供给本补丁。
-
-### wayland-118-compat 【kylin/v10】
-
-`wl_output` 的 name/description 事件仅存在于 libwayland ≥ 1.20; 宿主机
-(麒麟 V10 带 1.18) 直接构建在 `WaylandOutputViewport.cpp` 的监听器
-初始化处编译失败。按 `WAYLAND_VERSION_NUMBER` 分支, 并对低版本下不再
-引用的回调加 `[[maybe_unused]]`。容器构建 (无 wayland dev) 不受影响。
+v10 已归档 (交付线由 v11 接替), 其 wayland (1.18) 本就不可用 ——
+无条件关闭 Wayland 后端: `pkg_check_modules` 探测替换为
+`set(WAYLAND_SUPPORT_FOUND OFF)`, 构建仅出 X11 驱动, 二进制里不再
+有休眠的 Wayland 代码。
 
 ## 渲染保真
 
