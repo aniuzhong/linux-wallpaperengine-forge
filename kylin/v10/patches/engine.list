@@ -11,3 +11,4 @@ conditional-visibility-inverse
 passthrough-declared-size
 no-anisotropy-on-nearest
 default-uvs-center-crop
+automute-running-only

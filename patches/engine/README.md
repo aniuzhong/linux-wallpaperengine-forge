@@ -267,10 +267,22 @@ peony), 且要求 `_NET_WM_STATE_FULLSCREEN` 原子 —— UKUI 屏保常驻全�
 选择: v10 与 ubuntu (Xwayland, X11 驱动) 命中本补丁; kylin/v11 走
 Wayland 检测器, 本补丁为死代码, 不供给。
 
-## 文件重叠说明
+### automute-running-only 【kylin/v10, kylin/v11, ubuntu/26.04】
 
-- `CMakeLists.txt` 同时承载 gcc10-cxx20-compat (编译旗标) 与
-  optional-wayland (Wayland 可选), hunks 位于不同区段, 按序套用互不
-  干扰;
-- `ObjectParser.cpp` 的容错已由 tolerant-parsers 单补丁统一承载
-  (2026-10-10 合并, 见历史备注)。
+automute (其他应用播放音频时壁纸自动让路) 的探测谓词只检查"存在
+其他进程的、音量值非 0 的 sink-input", 不检查该流是否真的在渲染
+音频。常驻空闲流即可永久误触发: Virt Viewer (SPICE 音频转发通道)
+持有一条 CORKED、62% 音量的暂停流, 致使 v10 上只要虚拟机查看器
+开着, 任何壁纸都无声 —— Blue Sky 4K 实测 sink monitor 为纯数字
+静音 (引擎流未静音、100%、未暂停, 采样在消费但内容全零), 将该
+空闲流音量归零后 3 秒内壁纸音乐恢复 (峰值 72.2%)。
+
+修复: 探测条件追加 `!info->corked`, 只把未暂停的流计入让路判定
+(暂停信号跨版本可用; `pa_sink_input_info.state`/`PA_SINK_INPUT_RUNNING`
+在麒麟 V10 SP1 的 libpulse 13.99.1 头文件中不存在, 不可用)。
+CORKED 空闲流不再触发, 真实播放时让路行为保留。判别方法论: 从默认
+sink 的 monitor 录 5 秒测算峰值/RMS (数字静音 vs 有信号), 可在不同
+机器复现。
+
+涉及 `Audio/Drivers/Detectors/PulseAudioPlayingDetector.cpp`。
+

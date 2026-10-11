@@ -8,3 +8,4 @@ passthrough-declared-size
 x11-fullscreen-windowid-fix
 no-anisotropy-on-nearest
 default-uvs-center-crop
+automute-running-only
