@@ -1,0 +1,12 @@
+{
+    "KPackageStructure": "Plasma/Wallpaper",
+    "KPlugin": {
+        "Id": "org.forge.framesink",
+        "License": "MIT",
+        "Name": "Forge FrameSink",
+        "Description": "Displays linux-wallpaperengine shared memory frames inside plasmashell",
+        "Icon": "preferences-desktop-wallpaper",
+        "Version": "0.1"
+    },
+    "X-KDE-ParentApp": "org.kde.plasmashell"
+}

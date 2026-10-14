@@ -10,5 +10,5 @@ ENGINE_PATCH_LIST="$TARGET_DIR/patches/engine.list"
 GUI_PATCH_LIST="$TARGET_DIR/patches/gui.list"
 
 # 无 GO_REPLACE_PKG — 不接 Kylin background 契约模块
-# 无 INTEGRATION_BUILD — KDE 桌面集成走 systemd user unit (后补)
+INTEGRATION_BUILD="$FORGE_DIR/desktops/kde/build-plugin.sh"
 # 无 OVERLAY_DIR
