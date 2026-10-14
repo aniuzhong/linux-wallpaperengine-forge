@@ -5,6 +5,7 @@
 
 #include <EGL/egl.h>
 #include <chrono>
+#include <cstring>
 
 using namespace WallpaperEngine::Render::Drivers;
 using namespace WallpaperEngine::Render::Drivers::Output;
@@ -25,19 +26,7 @@ public:
     }
 
     void swapOutput () override {
-	glBindFramebuffer (GL_READ_FRAMEBUFFER, m_output->framebuffer ());
-	glReadBuffer (GL_COLOR_ATTACHMENT0);
-	glPixelStorei (GL_PACK_ALIGNMENT, 1);
-	std::vector<uint8_t> pixels (static_cast<size_t> (viewport.z) * viewport.w * 3);
-	glReadPixels (0, 0, viewport.z, viewport.w, GL_RGB, GL_UNSIGNED_BYTE, pixels.data ());
-	glBindFramebuffer (GL_READ_FRAMEBUFFER, 0);
-
-	const GLenum error = glGetError ();
-	if (error != GL_NO_ERROR) {
-	    sLog.error ("FrameSource readback failed with GL error ", error);
-	    return;
-	}
-	m_output->publishFrame (pixels);
+	m_output->captureFrame (uint32_t (viewport.z), uint32_t (viewport.w));
     }
 
 private:
@@ -58,6 +47,12 @@ FrameSinkOutput::FrameSinkOutput (ApplicationContext& context, VideoDriver& driv
 }
 
 FrameSinkOutput::~FrameSinkOutput () {
+    for (int i = 0; i < kPixelBufferCount; ++i) {
+	if (m_fences[i])
+	    glDeleteSync (m_fences[i]);
+	if (m_pixelBuffers[i] != 0)
+	    glDeleteBuffers (1, &m_pixelBuffers[i]);
+    }
     if (this->m_framebuffer != 0) {
 	glDeleteFramebuffers (1, &this->m_framebuffer);
     }
@@ -89,6 +84,67 @@ void FrameSinkOutput::setupFramebuffer (uint32_t width, uint32_t height) {
 	sLog.exception ("Framesink framebuffer is incomplete");
     }
     glBindFramebuffer (GL_FRAMEBUFFER, 0);
+    setupPixelBuffers (width, height);
+}
+
+void FrameSinkOutput::setupPixelBuffers (uint32_t width, uint32_t height) {
+    const char *opt = getenv ("LWE_ASYNC_READBACK");
+    m_asyncReadback = glewIsSupported ("GL_ARB_sync") != 0 && opt && opt[0] == '1';
+    const GLsizeiptr size = GLsizeiptr (width) * height * 3;
+    for (int i = 0; i < kPixelBufferCount; ++i) {
+	if (m_pixelBuffers[i] == 0)
+	    glGenBuffers (1, &m_pixelBuffers[i]);
+	glBindBuffer (GL_PIXEL_PACK_BUFFER, m_pixelBuffers[i]);
+	glBufferData (GL_PIXEL_PACK_BUFFER, size, nullptr, GL_STREAM_READ);
+    }
+    glBindBuffer (GL_PIXEL_PACK_BUFFER, 0);
+    sLog.out ("framesink readback mode: ", m_asyncReadback ? "async pbo" : "sync (set LWE_ASYNC_READBACK=1 to enable pbo)");
+}
+
+void FrameSinkOutput::captureFrame (uint32_t width, uint32_t height) {
+    if (!m_writer.valid ())
+	return;
+    const size_t frameBytes = size_t (width) * height * 3;
+    glBindFramebuffer (GL_READ_FRAMEBUFFER, m_framebuffer);
+    glReadBuffer (GL_COLOR_ATTACHMENT0);
+    glPixelStorei (GL_PACK_ALIGNMENT, 1);
+    if (!m_asyncReadback) {
+	m_stage.resize (frameBytes);
+	glReadPixels (0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, m_stage.data ());
+	const GLenum error = glGetError ();
+	glBindFramebuffer (GL_READ_FRAMEBUFFER, 0);
+	if (error != GL_NO_ERROR) {
+	    sLog.error ("framesink readback failed with GL error ", error);
+	    return;
+	}
+	publishFrame (m_stage);
+	return;
+    }
+    const int idx = int (m_captureIndex % kPixelBufferCount);
+    const int prev = int ((m_captureIndex + kPixelBufferCount - 1) % kPixelBufferCount);
+    if (m_captureIndex >= 1 && m_fences[prev]) {
+	glClientWaitSync (m_fences[prev], 0, GLuint64 (1000000000));
+	glDeleteSync (m_fences[prev]);
+	m_fences[prev] = nullptr;
+	glBindBuffer (GL_PIXEL_PACK_BUFFER, m_pixelBuffers[prev]);
+	if (auto *srcBytes = static_cast<const uint8_t *> (glMapBuffer (GL_PIXEL_PACK_BUFFER, GL_READ_ONLY))) {
+	    m_stage.resize (frameBytes);
+	    std::memcpy (m_stage.data (), srcBytes, frameBytes);
+	    glUnmapBuffer (GL_PIXEL_PACK_BUFFER);
+	    publishFrame (m_stage);
+	} else {
+	    sLog.error ("framesink pbo map failed");
+	}
+	glBindBuffer (GL_PIXEL_PACK_BUFFER, 0);
+    }
+    glBindBuffer (GL_PIXEL_PACK_BUFFER, m_pixelBuffers[idx]);
+    glReadPixels (0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    const GLenum error = glGetError ();
+    glBindBuffer (GL_PIXEL_PACK_BUFFER, 0);
+    glBindFramebuffer (GL_READ_FRAMEBUFFER, 0);
+    if (error == GL_NO_ERROR)
+	m_fences[idx] = glFenceSync (GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    ++m_captureIndex;
 }
 
 void FrameSinkOutput::publishFrame (const std::vector<uint8_t>& pixels) {

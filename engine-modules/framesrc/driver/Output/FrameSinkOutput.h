@@ -5,6 +5,7 @@
 #include "WallpaperEngine/Render/Drivers/VideoDriver.h"
 #include <GL/glew.h>
 #include <EGL/egl.h>
+#include <vector>
 
 namespace WallpaperEngine::Render::Drivers {
 class HeadlessOpenGLDriver;
@@ -25,18 +26,25 @@ public:
     void updateRender () const override;
 
     void publishFrame (const std::vector<uint8_t>& pixels);
+    void captureFrame (uint32_t width, uint32_t height);
     [[nodiscard]] GLuint framebuffer () const;
     [[nodiscard]] EGLDisplay eglDisplay () const;
     [[nodiscard]] EGLContext eglDisplayContext () const;
 
 private:
     void setupFramebuffer (uint32_t width, uint32_t height);
+    void setupPixelBuffers (uint32_t width, uint32_t height);
 
     FrameSource::Writer& m_writer;
     GLuint m_framebuffer = 0;
     GLuint m_colorTexture = 0;
     GLuint m_depthRenderbuffer = 0;
-    bool m_loggedNonZero = false;
     uint64_t m_publishedFrames = 0;
+    uint64_t m_captureIndex = 0;
+    bool m_asyncReadback = false;
+    static constexpr int kPixelBufferCount = 2;
+    GLuint m_pixelBuffers[kPixelBufferCount] = {};
+    GLsync m_fences[kPixelBufferCount] = {};
+    std::vector<uint8_t> m_stage;
 };
 }
