@@ -4,6 +4,7 @@
 #include <QtQuick/QSGSimpleTextureNode>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <cstring>
 #include <cstdint>
@@ -40,6 +41,11 @@ QSGNode *FrameSink::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
     if (!node)
         node = new QSGSimpleTextureNode;
 
+    if (m_map && (m_header->width != m_width || m_header->height != m_height)) {
+        closeSink();
+        openSink();
+    }
+
     if (m_map) {
         const uint64_t seq = __atomic_load_n(&m_header->sequence, __ATOMIC_ACQUIRE);
         if (seq != 0 && seq != m_drawnSequence
@@ -71,16 +77,22 @@ QSGNode *FrameSink::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
 
 void FrameSink::openSink()
 {
-    if (m_source.isEmpty())
+    if (m_map || m_source.isEmpty())
         return;
     m_fd = open(m_source.toUtf8().constData(), O_RDONLY);
-    if (m_fd < 0)
+    if (m_fd < 0) {
+        scheduleRetry();
         return;
+    }
     FrameOutHeader probe {};
+    struct stat st {};
     if (pread(m_fd, &probe, sizeof(probe), 0) != sizeof(probe) || probe.magic != 0x4C574531
-        || probe.width == 0 || probe.height == 0) {
+        || probe.width == 0 || probe.height == 0
+        || fstat(m_fd, &st) != 0
+        || size_t(st.st_size) < sizeof(FrameOutHeader) + size_t(probe.width) * probe.height * 3) {
         close(m_fd);
         m_fd = -1;
+        scheduleRetry();
         return;
     }
     m_width = probe.width;
@@ -91,7 +103,32 @@ void FrameSink::openSink()
         m_map = nullptr;
         close(m_fd);
         m_fd = -1;
+        scheduleRetry();
         return;
     }
     m_header = reinterpret_cast<FrameOutHeader *>(m_map);
+}
+
+void FrameSink::closeSink()
+{
+    if (m_map) {
+        munmap(m_map, sizeof(FrameOutHeader) + size_t(m_width) * m_height * 3);
+        m_map = nullptr;
+        m_header = nullptr;
+    }
+    if (m_fd >= 0) {
+        close(m_fd);
+        m_fd = -1;
+    }
+}
+
+void FrameSink::scheduleRetry()
+{
+    if (m_retryPending)
+        return;
+    m_retryPending = true;
+    QTimer::singleShot(500, this, [this] {
+        m_retryPending = false;
+        openSink();
+    });
 }
