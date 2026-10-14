@@ -52,6 +52,14 @@ else
 	apply_patch_list "$ENGINE_SRC" "$ENGINE_PATCH_LIST" "$FORGE_DIR/patches/engine"
 fi
 
+log "Syncing engine modules ..."
+mkdir -p "$ENGINE_SRC/src/WallpaperEngine/FrameSource"
+cp -a "$FORGE_DIR/engine-modules/framesrc/include/." "$ENGINE_SRC/src/WallpaperEngine/FrameSource/"
+cp -a "$FORGE_DIR/engine-modules/framesrc/src/." "$ENGINE_SRC/src/WallpaperEngine/FrameSource/"
+mkdir -p "$ENGINE_SRC/src/WallpaperEngine/Render/Drivers/Output"
+cp -a "$FORGE_DIR/engine-modules/framesrc/driver/HeadlessOpenGLDriver.h" "$FORGE_DIR/engine-modules/framesrc/driver/HeadlessOpenGLDriver.cpp" "$ENGINE_SRC/src/WallpaperEngine/Render/Drivers/"
+cp -a "$FORGE_DIR/engine-modules/framesrc/driver/Output/." "$ENGINE_SRC/src/WallpaperEngine/Render/Drivers/Output/"
+
 ensure_cmake 3.22
 
 BUILD_DIR="$ENGINE_SRC/build"
@@ -100,13 +108,17 @@ if [ -n "$(ls -A "$CEF_CACHE" 2>/dev/null)" ]; then
 	cp -al "$CEF_CACHE/." "$BUILD_DIR/cef/" 2>/dev/null || cp -a "$CEF_CACHE/." "$BUILD_DIR/cef/"
 fi
 
+	if command -v ccache >/dev/null 2>&1; then
+		FRAMESRC_CCACHE_ARGS="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+		log "Compiler cache: ccache enabled"
+	fi
 log "Configuring CMake ..."
 cmake -S "$ENGINE_SRC" -B "$BUILD_DIR" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
 	-DCMAKE_INSTALL_PREFIX="$PAYLOAD" \
 	-DBUILD_TESTING=OFF \
-	${FORGE_CMAKE_ARGS:-}
+	${FORGE_CMAKE_ARGS:-} ${FRAMESRC_CCACHE_ARGS:-}
 log "Building ($(nproc) jobs) ..."
 cmake --build "$BUILD_DIR" -j"$(nproc)"
 log "Installing into $PAYLOAD ..."

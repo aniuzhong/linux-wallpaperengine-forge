@@ -123,9 +123,38 @@ ensure_repo() {
 	log "Source ready: $(basename "$dir") @ ${ref:0:9}"
 }
 
+# Restores mtimes of files whose content is identical to a pre-build snapshot,
+# so git checkout + patch re-application does not trigger mass recompilation.
+preserve_mtimes_for_unchanged () {
+	local repo=$1 hash_before=$2 mt_before=$3
+	local hash_after
+	hash_after=$(cd "$repo" && find . -name .git -prune -o -type f -print0 | sort -z | xargs -0 md5sum 2>/dev/null)
+	local line sum file old_ts old_entry restored=0
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		sum="${line%% *}"
+		file="${line#* }"
+		old_entry=$(grep -F " $file" "$hash_before" | head -n 1 || true)
+		[ -n "$old_entry" ] || continue
+		[ "${old_entry%% *}" = "$sum" ] || continue
+		old_ts=$(grep -F " $file" "$mt_before" | head -n 1 | awk '{print $1}' || true)
+		if [ -n "$old_ts" ]; then
+			touch -d "@$old_ts" "$repo/$file"
+			restored=$((restored + 1))
+		fi
+	done < "$hash_after"
+	log "Preserved mtimes for $restored unchanged files"
+}
+
 apply_patch_list() {
 	local repo_src=$1 list=$2 pool=$3
 	local dir patch id
+
+	local hash_before mt_before
+	hash_before=$( (cd "$repo_src" && find . -name .git -prune -o -type f -print0 2>/dev/null | sort -z | xargs -0 -r md5sum 2>/dev/null) || true )
+	mt_before=$(mktemp)
+	(cd "$repo_src" && find . -name .git -prune -o -type f -printf '%T@ %p\n' | sort -k2) > "$mt_before"
+
 	git -C "$repo_src" checkout -- . 2>/dev/null || true
 	local -a all_patches=()
 	while IFS= read -r id; do
@@ -149,6 +178,9 @@ apply_patch_list() {
 			die "Cannot apply patch (upstream may have moved): $patch"
 		fi
 	done
+
+	preserve_mtimes_for_unchanged "$repo_src" "$hash_before" "$mt_before" || true
+	rm -f "$mt_before"
 }
 
 PROBE_MISSING=()

@@ -1,0 +1,222 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 11565a1f..c152dfcd 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -317,6 +317,18 @@ set(COMMON_SOURCES
+     src/WallpaperEngine/Assets/AssetLocator.cpp
+     src/WallpaperEngine/Assets/AssetLocator.h
+ 
++    src/WallpaperEngine/FrameSource/FrameSource.cpp
++    src/WallpaperEngine/FrameSource/FrameSource.h
++    src/WallpaperEngine/FrameSource/FrameSourceCapture.cpp
++    src/WallpaperEngine/FrameSource/FrameSourceCapture.h
++    src/WallpaperEngine/FrameSource/FrameSourceReader.cpp
++    src/WallpaperEngine/FrameSource/FrameSourceReader.h
++
++    src/WallpaperEngine/Render/Drivers/HeadlessOpenGLDriver.cpp
++    src/WallpaperEngine/Render/Drivers/HeadlessOpenGLDriver.h
++    src/WallpaperEngine/Render/Drivers/Output/FrameSinkOutput.cpp
++    src/WallpaperEngine/Render/Drivers/Output/FrameSinkOutput.h
++
+     src/WallpaperEngine/FileSystem/Container.h
+     src/WallpaperEngine/FileSystem/Container.cpp
+     src/WallpaperEngine/FileSystem/Adapters/Types.h
+diff --git a/src/WallpaperEngine/Application/ApplicationContext.cpp b/src/WallpaperEngine/Application/ApplicationContext.cpp
+index 510ec958..8c5a682a 100644
+--- a/src/WallpaperEngine/Application/ApplicationContext.cpp
++++ b/src/WallpaperEngine/Application/ApplicationContext.cpp
+@@ -552,6 +552,43 @@ void ApplicationContext::loadSettingsFromArgv () {
+ 	.default_value<uint32_t> (5)
+ 	.store_into (this->settings.screenshot.delay);
+ 
++    auto& frameOutGroup = program.add_group ("Frame export options");
++
++    frameOutGroup.add_argument ("--frame-out")
++	.help ("Streams every rendered frame into a shared memory file for external display frontends")
++	.default_value ("")
++	.action ([this] (const std::string& value) -> void {
++	    this->settings.frameOut.enabled = true;
++	    this->settings.frameOut.path = value;
++	});
++
++    auto& framesinkGroup = program.add_group ("Framesink options");
++
++    framesinkGroup.add_argument ("--framesink")
++	.help ("Headless render at WxH resolution without any window, exporting frames via --frame-out")
++	.action ([this] (const std::string& value) -> void {
++	    if (this->settings.render.mode == DESKTOP_BACKGROUND) {
++		sLog.exception ("Cannot run in both background and framesink mode");
++	    }
++
++	    this->settings.render.mode = FRAMESINK;
++
++	    const char* str = value.c_str ();
++	    const char* delim = strchr (str, 'x');
++
++	    if (delim == nullptr) {
++		sLog.exception ("Framesink resolution must be in the format: WxH");
++	    }
++
++	    this->settings.render.framesink.width = static_cast<uint32_t> (strtol (str, nullptr, 10));
++	    this->settings.render.framesink.height = static_cast<uint32_t> (strtol (delim + 1, nullptr, 10));
++
++	    if (this->settings.render.framesink.width == 0 || this->settings.render.framesink.height == 0) {
++		sLog.exception ("Framesink resolution must be in the format: WxH");
++	    }
++	})
++	.append ();
++
+     auto& contentGroup = program.add_group ("Content options");
+ 
+     contentGroup.add_argument ("--assets-dir")
+diff --git a/src/WallpaperEngine/Application/ApplicationContext.h b/src/WallpaperEngine/Application/ApplicationContext.h
+index 3af58c3b..88cbdc91 100644
+--- a/src/WallpaperEngine/Application/ApplicationContext.h
++++ b/src/WallpaperEngine/Application/ApplicationContext.h
+@@ -36,6 +36,8 @@ public:
+ 	NORMAL_WINDOW = 0,
+ 	/** Draw to the window server desktop */
+ 	DESKTOP_BACKGROUND = 1,
++	/** Headless render into the FrameSource shared memory export */
++	FRAMESINK = 3,
+ 	/** Explicit window mode with specified geometry */
+ 	EXPLICIT_WINDOW = 2,
+     };
+@@ -146,6 +148,11 @@ public:
+ 		/** Which wlr-layer-shell layer to use for desktop backgrounds */
+ 		WAYLAND_LAYER layer;
+ 	    } wayland;
++
++	    struct {
++		uint32_t width;
++		uint32_t height;
++	    } framesink;
+ 	} render;
+ 
+ 	/**
+@@ -183,6 +190,11 @@ public:
+ 	    /** The path to where the screenshot must be saved */
+ 	    std::filesystem::path path;
+ 	} screenshot;
++
++	struct {
++	    bool enabled;
++	    std::filesystem::path path;
++	} frameOut;
+     } settings = {
+         .general = {
+             .onlyListProperties = false,
+@@ -219,6 +231,10 @@ public:
+             .wayland = {
+                 .layer = WAYLAND_LAYER_BOTTOM,
+             },
++            .framesink = {
++                .width = 0,
++                .height = 0,
++            },
+         },
+         .audio = {
+             .enabled = true,
+@@ -235,6 +251,10 @@ public:
+             .delay = 5,
+             .path = "",
+         },
++        .frameOut = {
++            .enabled = false,
++            .path = "",
++        },
+     };
+ 
+     ApplicationState state;
+diff --git a/src/WallpaperEngine/Application/WallpaperApplication.cpp b/src/WallpaperEngine/Application/WallpaperApplication.cpp
+index c9107afc..ea85905e 100644
+--- a/src/WallpaperEngine/Application/WallpaperApplication.cpp
++++ b/src/WallpaperEngine/Application/WallpaperApplication.cpp
+@@ -5,6 +5,8 @@
+ #include "WallpaperEngine/Assets/AssetLoadException.h"
+ #include "WallpaperEngine/Audio/Drivers/Detectors/PulseAudioPlayingDetector.h"
+ #include "WallpaperEngine/FileSystem/Container.h"
++#include "WallpaperEngine/FrameSource/FrameSource.h"
++#include "WallpaperEngine/FrameSource/FrameSourceCapture.h"
+ #include "WallpaperEngine/Logging/Log.h"
+ #include "WallpaperEngine/Render/Drivers/VideoFactories.h"
+ #include "WallpaperEngine/Render/RenderContext.h"
+@@ -181,7 +183,8 @@ AssetLocatorUniquePtr WallpaperApplication::setupAssetLocator (const std::string
+ 
+ void WallpaperApplication::loadBackgrounds () {
+     if (this->m_context.settings.render.mode == ApplicationContext::NORMAL_WINDOW
+-	|| this->m_context.settings.render.mode == ApplicationContext::EXPLICIT_WINDOW) {
++	|| this->m_context.settings.render.mode == ApplicationContext::EXPLICIT_WINDOW
++	|| this->m_context.settings.render.mode == ApplicationContext::FRAMESINK) {
+ 	auto path = this->m_context.settings.general.defaultBackground;
+ 
+ 	if (this->m_context.settings.general.defaultPlaylist.has_value ()
+@@ -939,6 +942,11 @@ void WallpaperApplication::render () {
+ 
+     this->updatePlaylists ();
+ 
++    if (this->m_context.settings.frameOut.enabled
++	&& this->m_context.settings.render.mode != ApplicationContext::FRAMESINK) {
++	this->captureFrameOut ();
++    }
++
+     if (!this->m_context.settings.screenshot.take || this->m_screenShotTaken == true) {
+ 	return;
+     }
+@@ -951,6 +959,29 @@ void WallpaperApplication::render () {
+     this->m_screenShotTaken = true;
+ }
+ 
++void WallpaperApplication::captureFrameOut () {
++    const auto& wallpapers = this->m_renderContext->getWallpapers ();
++    if (wallpapers.empty ()) {
++	return;
++    }
++
++    const auto& viewports = this->m_renderContext->getOutput ().getViewports ();
++    if (viewports.empty ()) {
++	return;
++    }
++
++    const auto& wallpaper = wallpapers.begin ()->second;
++    const uint32_t width = static_cast<uint32_t> (this->m_renderContext->getOutput ().getFullWidth ());
++    const uint32_t height = static_cast<uint32_t> (this->m_renderContext->getOutput ().getFullHeight ());
++    if (static_cast<uint32_t> (wallpaper->getWidth ()) < width
++	|| static_cast<uint32_t> (wallpaper->getHeight ()) < height) {
++	return;
++    }
++
++    viewports.begin ()->second->makeCurrent ();
++    FrameSource::capture (this->m_context.settings.frameOut.path, wallpaper->getWallpaperFramebuffer (), width, height, FrameSource::RowOrder::TopDown, this->m_frameOut);
++}
++
+ void WallpaperApplication::cleanup () {
+     sLog.out ("Stopping");
+ 
+diff --git a/src/WallpaperEngine/Application/WallpaperApplication.h b/src/WallpaperEngine/Application/WallpaperApplication.h
+index 1d1302a9..db35fb21 100644
+--- a/src/WallpaperEngine/Application/WallpaperApplication.h
++++ b/src/WallpaperEngine/Application/WallpaperApplication.h
+@@ -5,6 +5,7 @@
+ 
+ #include "WallpaperEngine/Application/ApplicationContext.h"
+ #include "WallpaperEngine/Assets/AssetLocator.h"
++#include "WallpaperEngine/FrameSource/FrameSource.h"
+ 
+ #include "WallpaperEngine/Render/CWallpaper.h"
+ #include "WallpaperEngine/Render/Drivers/Detectors/FullScreenDetector.h"
+@@ -140,6 +141,7 @@ private:
+      * @param filename
+      */
+     void takeScreenshot (const std::filesystem::path& filename) const;
++    void captureFrameOut ();
+ 
+     struct ActivePlaylist {
+ 	ApplicationContext::PlaylistDefinition definition;
+@@ -182,5 +184,6 @@ private:
+     uint32_t m_nextFrameScreenshot = 0;
+     std::chrono::steady_clock::time_point m_pauseStart {};
+     GLuint m_destinationFramebuffer = 0;
++    FrameSource::Writer m_frameOut;
+ };
+ } // namespace WallpaperEngine::Application
