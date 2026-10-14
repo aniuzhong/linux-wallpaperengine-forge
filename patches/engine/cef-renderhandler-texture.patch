@@ -1,0 +1,24 @@
+diff --git a/src/WallpaperEngine/WebBrowser/CEF/RenderHandler.cpp b/src/WallpaperEngine/WebBrowser/CEF/RenderHandler.cpp
+index fc31baad..37672a9b 100644
+--- a/src/WallpaperEngine/WebBrowser/CEF/RenderHandler.cpp
++++ b/src/WallpaperEngine/WebBrowser/CEF/RenderHandler.cpp
+@@ -4,12 +4,10 @@ using namespace WallpaperEngine::WebBrowser::CEF;
+ 
+ RenderHandler::RenderHandler (WallpaperEngine::Render::Wallpapers::CWeb* webdata) : m_webdata (webdata) { }
+ 
+-// Required by CEF
+ void RenderHandler::GetViewRect (CefRefPtr<CefBrowser> browser, CefRect& rect) {
+     rect = CefRect (0, 0, this->m_webdata->getWidth (), this->m_webdata->getHeight ());
+ }
+ 
+-// Will be executed in CEF message loop
+ void RenderHandler::OnPaint (
+     CefRefPtr<CefBrowser> browser, PaintElementType type, const RectList& dirtyRects, const void* buffer,
+     const int width, const int height
+@@ -24,4 +22,4 @@ int RenderHandler::getWidth () const { return this->m_webdata->getWidth (); }
+ 
+ int RenderHandler::getHeight () const { return this->m_webdata->getHeight (); }
+ 
+-GLuint RenderHandler::texture () const { return this->m_webdata->getWallpaperFramebuffer (); }
+\ No newline at end of file
++GLuint RenderHandler::texture () const { return this->m_webdata->getWallpaperTexture (); }

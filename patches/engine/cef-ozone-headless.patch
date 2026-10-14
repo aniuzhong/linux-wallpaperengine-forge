@@ -1,0 +1,39 @@
+diff --git a/src/WallpaperEngine/WebBrowser/CEF/BrowserApp.cpp b/src/WallpaperEngine/WebBrowser/CEF/BrowserApp.cpp
+index 93c82ed6..d99b4f07 100644
+--- a/src/WallpaperEngine/WebBrowser/CEF/BrowserApp.cpp
++++ b/src/WallpaperEngine/WebBrowser/CEF/BrowserApp.cpp
+@@ -1,5 +1,6 @@
+ #include "BrowserApp.h"
+ #include "WallpaperEngine/Logging/Log.h"
++#include <cstdlib>
+ 
+ using namespace WallpaperEngine::WebBrowser::CEF;
+ 
+@@ -18,6 +19,13 @@ void BrowserApp::OnContextInitialized () {
+ }
+ 
+ void BrowserApp::OnBeforeCommandLineProcessing (const CefString& process_type, CefRefPtr<CefCommandLine> command_line) {
++    const char *display = getenv ("DISPLAY");
++    const char *wayland = getenv ("WAYLAND_DISPLAY");
++    if ((!display || !*display) && (!wayland || !*wayland)) {
++	command_line->AppendSwitchWithValue ("ozone-platform", "headless");
++	command_line->AppendSwitch ("--use-angle=swiftshader");
++	command_line->AppendSwitch ("--password-store=basic");
++    }
+     command_line->AppendSwitchWithValue (
+ 	"--disable-features",
+ 	"IsolateOrigins,HardwareMediaKeyHandling,WebContentsOcclusion,RendererCodeIntegrityEnabled,site-per-process"
+@@ -47,6 +55,13 @@ if (process_type.empty()) {
+ }
+ 
+ void BrowserApp::OnBeforeChildProcessLaunch (CefRefPtr<CefCommandLine> command_line) {
++    const char *display = getenv ("DISPLAY");
++    const char *wayland = getenv ("WAYLAND_DISPLAY");
++    if ((!display || !*display) && (!wayland || !*wayland)) {
++	command_line->AppendSwitchWithValue ("ozone-platform", "headless");
++	command_line->AppendSwitch ("--use-angle=swiftshader");
++	command_line->AppendSwitch ("--password-store=basic");
++    }
+     // add back any parameters we had before so the new process can load up everything needed
+     for (int i = 1; i < this->getApplication ().getContext ().getArgc (); i++) {
+ 	command_line->AppendArgument (this->getApplication ().getContext ().getArgv ()[i]);
