@@ -100,8 +100,11 @@ HeadlessOpenGLDriver::HeadlessOpenGLDriver (ApplicationContext& context, Wallpap
     }
     glGetError ();
 
+    this->m_startTime = std::chrono::steady_clock::now ();
+    this->m_output = new FrameSinkOutput (this->m_context, *this, this->m_frameOutWriter);
     if (this->m_context.settings.frameOut.enabled
-	&& !this->m_context.settings.frameOut.path.empty ()) {
+	&& !this->m_context.settings.frameOut.path.empty ()
+	&& this->m_output->transport () == FrameSinkOutput::Transport::Shm) {
 	const auto status = this->m_frameOutWriter.open (
 	    this->m_context.settings.frameOut.path, width, height
 	);
@@ -109,9 +112,6 @@ HeadlessOpenGLDriver::HeadlessOpenGLDriver (ApplicationContext& context, Wallpap
 	    sLog.error ("FrameSource writer open failed: ", FrameSource::resultText (status));
 	}
     }
-
-    this->m_startTime = std::chrono::steady_clock::now ();
-    this->m_output = new FrameSinkOutput (this->m_context, *this, this->m_frameOutWriter);
 }
 
 HeadlessOpenGLDriver::~HeadlessOpenGLDriver () {
@@ -129,10 +129,10 @@ HeadlessOpenGLDriver::~HeadlessOpenGLDriver () {
 }
 
 bool HeadlessOpenGLDriver::bootstrapEGL (std::string& error) {
-    if (tryPlatformDisplay (EGL_PLATFORM_SURFACELESS_MESA, this->m_eglDisplay)) {
+    if (tryDeviceDisplay (this->m_eglDisplay, error)) {
 	return true;
     }
-    if (tryDeviceDisplay (this->m_eglDisplay, error)) {
+    if (tryPlatformDisplay (EGL_PLATFORM_SURFACELESS_MESA, this->m_eglDisplay)) {
 	return true;
     }
     this->m_eglDisplay = eglGetDisplay (EGL_DEFAULT_DISPLAY);
@@ -165,14 +165,10 @@ bool HeadlessOpenGLDriver::bootstrapContext (std::string& error) {
 	}
     }
 
-    const EGLint contextAttribs[] = {
-	EGL_CONTEXT_MAJOR_VERSION, 3,
-	EGL_CONTEXT_MINOR_VERSION, 0,
-	EGL_NONE
-    };
-    this->m_eglContext = eglCreateContext (this->m_eglDisplay, config, EGL_NO_CONTEXT, contextAttribs);
+    this->m_eglContext = eglCreateContext (this->m_eglDisplay, config, EGL_NO_CONTEXT, nullptr);
     if (this->m_eglContext == EGL_NO_CONTEXT) {
-	this->m_eglContext = eglCreateContext (this->m_eglDisplay, config, EGL_NO_CONTEXT, nullptr);
+	const EGLint contextAttribs[] = {EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 0, EGL_NONE};
+	this->m_eglContext = eglCreateContext (this->m_eglDisplay, config, EGL_NO_CONTEXT, contextAttribs);
     }
     if (this->m_eglContext == EGL_NO_CONTEXT) {
 	error = "eglCreateContext failed";

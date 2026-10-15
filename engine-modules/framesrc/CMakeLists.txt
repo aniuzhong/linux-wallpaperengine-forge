@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(framesource STATIC
+    src/FrameSinkChannel.cpp
     src/FrameSource.cpp
     src/FrameSourceReader.cpp
     src/FrameSourceCapture.cpp
@@ -25,6 +26,10 @@ target_link_libraries(test_capture_gl PRIVATE framesource OpenGL::GL ${EGL_LIBRA
 add_executable(test_perf tests/test_perf.cpp tests/EglContext.cpp)
 target_link_libraries(test_perf PRIVATE framesource OpenGL::GL ${EGL_LIBRARY})
 
+add_executable(dmabuf_probe tests/dmabuf_probe.cpp)
+target_link_libraries(dmabuf_probe PRIVATE framesource OpenGL::GL ${EGL_LIBRARY})
+
 add_test(NAME roundtrip COMMAND test_roundtrip)
 add_test(NAME capture_gl COMMAND test_capture_gl)
 add_test(NAME perf COMMAND test_perf)
+add_test(NAME dmabuf_probe COMMAND dmabuf_probe)

@@ -4,8 +4,19 @@
 #include "WallpaperEngine/Logging/Log.h"
 
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <unistd.h>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+
+#ifndef EGL_SYNC_NATIVE_FENCE_ANDROID
+#define EGL_SYNC_NATIVE_FENCE_ANDROID 0x3144
+#endif
+#ifndef EGL_NO_SYNC_KHR
+#define EGL_NO_SYNC_KHR ((EGLSyncKHR) 0)
+#endif
 
 using namespace WallpaperEngine::Render::Drivers;
 using namespace WallpaperEngine::Render::Drivers::Output;
@@ -36,6 +47,7 @@ private:
 
 FrameSinkOutput::FrameSinkOutput (ApplicationContext& context, VideoDriver& driver, FrameSource::Writer& writer) :
     Output (context, driver), m_writer (writer) {
+    m_channelPath = context.settings.frameOut.path.string () + ".sock";
     this->m_fullWidth = static_cast<int> (context.settings.render.framesink.width);
     this->m_fullHeight = static_cast<int> (context.settings.render.framesink.height);
 
@@ -47,6 +59,7 @@ FrameSinkOutput::FrameSinkOutput (ApplicationContext& context, VideoDriver& driv
 }
 
 FrameSinkOutput::~FrameSinkOutput () {
+    releaseSlots ();
     for (int i = 0; i < kPixelBufferCount; ++i) {
 	if (m_fences[i])
 	    glDeleteSync (m_fences[i]);
@@ -67,7 +80,7 @@ FrameSinkOutput::~FrameSinkOutput () {
 void FrameSinkOutput::setupFramebuffer (uint32_t width, uint32_t height) {
     glGenTextures (1, &this->m_colorTexture);
     glBindTexture (GL_TEXTURE_2D, this->m_colorTexture);
-    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGB8, static_cast<GLsizei> (width), static_cast<GLsizei> (height), 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei> (width), static_cast<GLsizei> (height), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
@@ -85,6 +98,143 @@ void FrameSinkOutput::setupFramebuffer (uint32_t width, uint32_t height) {
     }
     glBindFramebuffer (GL_FRAMEBUFFER, 0);
     setupPixelBuffers (width, height);
+    setupTransport (width, height);
+}
+
+void FrameSinkOutput::setupTransport (uint32_t width, uint32_t height) {
+    const char *opt = getenv ("LWE_FRAME_TRANSPORT");
+    const bool allowDmaBuf = !opt || opt[0] != 's';
+    if (allowDmaBuf && probeDmaBufExport ()) {
+        auto createImage = (EGLImageKHR (*) (EGLDisplay, EGLContext, EGLenum, EGLClientBuffer, const EGLint *))
+            eglGetProcAddress ("eglCreateImageKHR");
+        auto queryDmaBuf = (EGLBoolean (*) (EGLDisplay, EGLImageKHR, int *, int *, uint64_t *))
+            eglGetProcAddress ("eglExportDMABUFImageQueryMESA");
+        auto exportDmaBuf = (EGLBoolean (*) (EGLDisplay, void *, int *, EGLint *, EGLint *))
+            eglGetProcAddress ("eglExportDMABUFImageMESA");
+        int fourcc = 0, stride = 0;
+        uint64_t modifier = 0;
+        for (int i = 0; i < kSlotCount; ++i) {
+            glGenTextures (1, &m_slotTextures[i]);
+            glBindTexture (GL_TEXTURE_2D, m_slotTextures[i]);
+            glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei> (width), static_cast<GLsizei> (height),
+                0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            const EGLint attrs[] = {EGL_GL_TEXTURE_LEVEL_KHR, 0, EGL_NONE};
+            m_eglImages[i] = createImage (m_eglDisplayHandle, eglGetCurrentContext (),
+                EGL_GL_TEXTURE_2D_KHR, (EGLClientBuffer) (uintptr_t) m_slotTextures[i], attrs);
+            int slotFourcc = 0, slotPlanes = 0, slotStride = 0, slotOffset = 0;
+            uint64_t slotModifier = 0;
+            if (m_eglImages[i] == nullptr
+                || !queryDmaBuf (m_eglDisplayHandle, m_eglImages[i], &slotFourcc, &slotPlanes, &slotModifier)
+                || !exportDmaBuf (m_eglDisplayHandle, m_eglImages[i], &m_dmabufFds[i], &slotStride, &slotOffset)
+                || m_dmabufFds[i] < 0 || slotPlanes != 1 || slotFourcc == 0 || slotStride <= 0
+                || (i > 0 && (slotFourcc != fourcc || slotStride != stride || slotModifier != modifier))) {
+                sLog.error ("framesink: slot ", i, " dmabuf export failed, transport degraded");
+                releaseSlots ();
+                m_transport = Transport::Shm;
+                sLog.out ("framesink transport: shm");
+                return;
+            }
+            glBindTexture (GL_TEXTURE_2D, 0);
+            glGenFramebuffers (1, &m_slotFramebuffers[i]);
+            glBindFramebuffer (GL_FRAMEBUFFER, m_slotFramebuffers[i]);
+            glFramebufferTexture2D (GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_slotTextures[i], 0);
+            glBindFramebuffer (GL_FRAMEBUFFER, 0);
+            fourcc = slotFourcc;
+            stride = slotStride;
+            modifier = slotModifier;
+        }
+        FrameSource::FrameChannelHello hello {};
+        hello.magic[0] = 'L'; hello.magic[1] = 'W'; hello.magic[2] = 'E'; hello.magic[3] = '2';
+        hello.version = 1;
+        hello.width = width; hello.height = height;
+        hello.fourcc = uint32_t (fourcc);
+        hello.stride = uint32_t (stride);
+        hello.modifier = modifier;
+        hello.slotCount = kSlotCount;
+        m_channel.start (m_channelPath, hello, std::vector<int> (m_dmabufFds, m_dmabufFds + kSlotCount));
+        m_transport = Transport::DmaBuf;
+        char fcc[5] = {char (fourcc & 0xff), char ((fourcc >> 8) & 0xff), char ((fourcc >> 16) & 0xff),
+                       char ((fourcc >> 24) & 0xff), 0};
+        char mod[32];
+        snprintf (mod, sizeof (mod), "0x%016llx", (unsigned long long) modifier);
+        sLog.out ("framesink transport: dmabuf (", kSlotCount, " slots, fourcc=", fcc,
+            ", stride=", stride, ", modifier=", mod, ")");
+    } else {
+        m_transport = Transport::Shm;
+        sLog.out ("framesink transport: shm");
+    }
+}
+
+void FrameSinkOutput::releaseSlots () {
+    auto destroyImage = (EGLBoolean (*) (EGLDisplay, EGLImageKHR)) eglGetProcAddress ("eglDestroyImageKHR");
+    for (int i = 0; i < kSlotCount; ++i) {
+        if (m_dmabufFds[i] >= 0) {
+            close (m_dmabufFds[i]);
+            m_dmabufFds[i] = -1;
+        }
+        if (destroyImage && m_eglImages[i])
+            destroyImage (reinterpret_cast<EGLDisplay> (m_eglDisplayHandle), static_cast<EGLImageKHR> (m_eglImages[i]));
+        m_eglImages[i] = nullptr;
+        if (m_slotTextures[i] != 0) {
+            glDeleteTextures (1, &m_slotTextures[i]);
+            m_slotTextures[i] = 0;
+        }
+        if (m_slotFramebuffers[i] != 0) {
+            glDeleteFramebuffers (1, &m_slotFramebuffers[i]);
+            m_slotFramebuffers[i] = 0;
+        }
+    }
+}
+
+bool FrameSinkOutput::probeDmaBufExport () {
+    m_dupNativeFence = reinterpret_cast<void *> (eglGetProcAddress ("eglDupNativeFenceFDANDROID"));
+    m_eglDisplayHandle = eglDisplay ();
+    const int w = 256, h = 256;
+    auto createImage = reinterpret_cast<EGLImageKHR (*) (EGLDisplay, EGLContext, EGLenum, EGLClientBuffer, const EGLint *)>
+	(eglGetProcAddress ("eglCreateImageKHR"));
+    auto queryDmaBuf = reinterpret_cast<EGLBoolean (*) (EGLDisplay, EGLImageKHR, int *, int *, uint64_t *)>
+	(eglGetProcAddress ("eglExportDMABUFImageQueryMESA"));
+    auto exportDmaBuf = reinterpret_cast<EGLBoolean (*) (EGLDisplay, void *, int *, EGLint *, EGLint *)>
+	(eglGetProcAddress ("eglExportDMABUFImageMESA"));
+    const char *variants[] = {"mutable-teximage", "immutable-texstorage"};
+    for (int variant = 0; variant < 2; ++variant) {
+	GLuint tex = 0;
+	glGenTextures (1, &tex);
+	glBindTexture (GL_TEXTURE_2D, tex);
+	std::vector<uint8_t> pattern (size_t (w) * h * 4, 0);
+	for (size_t k = 0; k < pattern.size (); k += 4) { pattern[k] = 0x10; pattern[k+1] = 0x20; pattern[k+2] = 0x40; pattern[k+3] = 0xFF; }
+	if (variant == 0) {
+	    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pattern.data ());
+	} else {
+	    glTexStorage2D (GL_TEXTURE_2D, 1, GL_RGBA8, w, h);
+	    glTexSubImage2D (GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pattern.data ());
+	}
+	glFinish ();
+	const EGLint attrs[] = {EGL_GL_TEXTURE_LEVEL_KHR, 0, EGL_NONE};
+	EGLImageKHR img = createImage (m_eglDisplayHandle, eglGetCurrentContext (), EGL_GL_TEXTURE_2D_KHR,
+	    (EGLClientBuffer) (uintptr_t) tex, attrs);
+	if (img == EGL_NO_IMAGE_KHR) {
+	    sLog.out ("probe: variant ", variants[variant], " create fail eglErr=", (int) eglGetError ());
+	    glDeleteTextures (1, &tex);
+	    continue;
+	}
+	int fd = -1, stride = 0, offset = 0;
+	int fourcc = 0, planes = 0;
+	uint64_t modifier = 0;
+	if (!queryDmaBuf (m_eglDisplayHandle, img, &fourcc, &planes, &modifier)
+	    || !exportDmaBuf (m_eglDisplayHandle, img, &fd, &stride, &offset) || fd < 0) {
+	    sLog.out ("probe: variant ", variants[variant], " export fail");
+	    if (fd >= 0) close (fd);
+	    glDeleteTextures (1, &tex);
+	    continue;
+	}
+	close (fd);
+	glDeleteTextures (1, &tex);
+	sLog.out ("probe: variant ", variants[variant], " OK");
+	return true;
+    }
+    sLog.error ("probe: all variants failed");
+    return false;
 }
 
 void FrameSinkOutput::setupPixelBuffers (uint32_t width, uint32_t height) {
@@ -102,6 +252,49 @@ void FrameSinkOutput::setupPixelBuffers (uint32_t width, uint32_t height) {
 }
 
 void FrameSinkOutput::captureFrame (uint32_t width, uint32_t height) {
+    if (m_transport == Transport::DmaBuf) {
+        const int idx = int (m_frameSeq % kSlotCount);
+        glBindFramebuffer (GL_READ_FRAMEBUFFER, m_framebuffer);
+        glReadBuffer (GL_COLOR_ATTACHMENT0);
+        glPixelStorei (GL_UNPACK_ALIGNMENT, 1);
+        glBindTexture (GL_TEXTURE_2D, m_slotTextures[idx]);
+        glCopyTexSubImage2D (GL_TEXTURE_2D, 0, 0, 0, 0, 0, static_cast<GLsizei> (width), static_cast<GLsizei> (height));
+        const GLenum copyError = glGetError ();
+        glBindTexture (GL_TEXTURE_2D, 0);
+        glBindFramebuffer (GL_READ_FRAMEBUFFER, 0);
+        if (copyError != GL_NO_ERROR) {
+            sLog.error ("framesink dmabuf copy failed with GL error ", copyError);
+            return;
+        }
+        glBindFramebuffer (GL_FRAMEBUFFER, m_slotFramebuffers[idx]);
+        glColorMask (GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+        glClearColor (0.0f, 0.0f, 0.0f, 1.0f);
+        glClear (GL_COLOR_BUFFER_BIT);
+        glColorMask (GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glBindFramebuffer (GL_FRAMEBUFFER, 0);
+        int fenceFd = -1;
+        EGLDisplay display = reinterpret_cast<EGLDisplay> (m_eglDisplayHandle);
+        if (m_dupNativeFence) {
+            auto createSync = reinterpret_cast<EGLSyncKHR (*) (EGLDisplay, EGLenum, const EGLint *)>
+                (eglGetProcAddress ("eglCreateSyncKHR"));
+            auto destroySync = reinterpret_cast<EGLBoolean (*) (EGLDisplay, EGLSyncKHR)>
+                (eglGetProcAddress ("eglDestroySyncKHR"));
+            auto dupFence = reinterpret_cast<int (*) (EGLDisplay, EGLSyncKHR)> (m_dupNativeFence);
+            if (createSync && destroySync) {
+                EGLSyncKHR sync = createSync (display, EGL_SYNC_NATIVE_FENCE_ANDROID, nullptr);
+                if (sync != EGL_NO_SYNC_KHR) {
+                    glFlush ();
+                    fenceFd = dupFence (display, sync);
+                    destroySync (display, sync);
+                }
+            }
+        }
+        glFlush ();
+        if (++m_frameSeq % 60 == 0)
+            sLog.out ("[transport] dmabuf frame sent seq=", m_frameSeq);
+        m_channel.sendFrame (m_frameSeq, idx, fenceFd);
+        return;
+    }
     if (!m_writer.valid ())
 	return;
     const size_t frameBytes = size_t (width) * height * 3;
