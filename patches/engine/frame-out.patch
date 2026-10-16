@@ -2,7 +2,7 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 11565a1f..c152dfcd 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -317,6 +317,18 @@ set(COMMON_SOURCES
+@@ -317,6 +317,20 @@ set(COMMON_SOURCES
      src/WallpaperEngine/Assets/AssetLocator.cpp
      src/WallpaperEngine/Assets/AssetLocator.h
  
@@ -12,6 +12,8 @@ index 11565a1f..c152dfcd 100644
 +    src/WallpaperEngine/FrameSource/FrameSourceCapture.h
 +    src/WallpaperEngine/FrameSource/FrameSourceReader.cpp
 +    src/WallpaperEngine/FrameSource/FrameSourceReader.h
++    src/WallpaperEngine/FrameSource/FrameSinkChannel.cpp
++    src/WallpaperEngine/FrameSource/FrameSinkChannel.h
 +
 +    src/WallpaperEngine/Render/Drivers/HeadlessOpenGLDriver.cpp
 +    src/WallpaperEngine/Render/Drivers/HeadlessOpenGLDriver.h

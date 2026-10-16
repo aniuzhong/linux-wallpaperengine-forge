@@ -3,11 +3,13 @@
 #include <QtGui/QImage>
 #include <QtGui/QOpenGLContext>
 #include <QtGui/qopenglcontext_platform.h>
+#include <QtGui/QPainter>
 #include <QtQuick/QSGSimpleTextureNode>
 #include <QtQuick/qsgtexture_platform.h>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -24,6 +26,9 @@
 #endif
 #ifndef EGL_LINUX_DMA_BUF_EXT
 #define EGL_LINUX_DMA_BUF_EXT 0x3270
+#endif
+#ifndef EGL_SYNC_NATIVE_FENCE_ANDROID
+#define EGL_SYNC_NATIVE_FENCE_ANDROID 0x3144
 #endif
 #ifndef EGL_LINUX_DRM_FOURCC_EXT
 #define EGL_LINUX_DRM_FOURCC_EXT 0x3271
@@ -51,7 +56,8 @@ FrameSink::FrameSink(QQuickItem *parent)
     m_timer = new QTimer(this);
     m_timer->setInterval(33);
     connect(m_timer, &QTimer::timeout, this, &QQuickItem::update);
-    memset(m_slots, 0, sizeof(m_slots));
+    for (auto &s : m_slots)
+        s = DmaSlot {};
 }
 
 FrameSink::~FrameSink()
@@ -64,6 +70,15 @@ FrameSink::~FrameSink()
         if (s.dmabufFd >= 0)
             close(s.dmabufFd);
     }
+    for (auto &s : m_retired) {
+        delete s.texture;
+        if (s.fenceFd >= 0)
+            close(s.fenceFd);
+        if (s.dmabufFd >= 0)
+            close(s.dmabufFd);
+    }
+    if (m_hintTexture)
+        m_hintTexture->deleteLater();
     closeSink();
 }
 
@@ -81,7 +96,7 @@ void FrameSink::componentComplete()
 {
     QQuickItem::componentComplete();
     tryAttach();
-    m_timer->start();
+    update();
 }
 
 void FrameSink::tryAttach()
@@ -91,13 +106,20 @@ void FrameSink::tryAttach()
     startSocketServer();
     if (m_connFd >= 0 && m_helloDone) {
         m_mode = Mode::DmaBuf;
+        startRepaint();
+        update();
         return;
     }
     if (openSink()) {
         m_mode = Mode::Shm;
+        m_lastProgress = std::chrono::steady_clock::now();
+        startRepaint();
+        update();
         return;
     }
+    stopRepaint();
     scheduleRetry();
+    update();
 }
 
 void FrameSink::startSocketServer()
@@ -168,6 +190,16 @@ bool FrameSink::readHello(msghdr &msg, ssize_t n)
     m_dmaModifier = hello->modifier;
     m_fourcc = hello->fourcc ? hello->fourcc : 0x34324241;
     m_slotCount = hello->slotCount;
+    for (auto &s : m_slots) {
+        if (s.dmabufFd >= 0 || s.eglImage || s.glTex || s.texture || s.fenceFd >= 0)
+            m_retired.push_back(s);
+        s = DmaSlot {};
+    }
+    m_drawnSequence = 0;
+    m_bestSeq = 0;
+    m_bestSlot = -1;
+    m_detachPending = false;
+    m_lastDrawnSlot = -1;
     int fds[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
     for (cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
         if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS)
@@ -197,12 +229,17 @@ void FrameSink::onConnectionReadable()
         msg.msg_control = control;
         msg.msg_controllen = sizeof(control);
         ssize_t n = recvmsg(m_connFd, &msg, MSG_DONTWAIT);
+        if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            handleConnectionLost();
+            return;
+        }
         if (n <= 0)
             return;
         if (!readHello(msg, n))
             dropConnection();
         return;
     }
+    bool lost = false;
     for (;;) {
         FrameChannelFrame frame {};
         iovec iov {};
@@ -215,8 +252,20 @@ void FrameSink::onConnectionReadable()
         msg.msg_control = control;
         msg.msg_controllen = sizeof(control);
         ssize_t n = recvmsg(m_connFd, &msg, MSG_DONTWAIT | MSG_TRUNC);
-        if (n < ssize_t(sizeof(FrameChannelFrame)))
+        if (n == 0) {
+            lost = true;
             break;
+        }
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                break;
+            lost = true;
+            break;
+        }
+        if (n < ssize_t(sizeof(FrameChannelFrame))) {
+            lost = true;
+            break;
+        }
         int fenceFd = -1;
         for (cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
             if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS
@@ -234,12 +283,26 @@ void FrameSink::onConnectionReadable()
             close(s.fenceFd);
         s.fenceFd = fenceFd;
         s.seq = frame.sequence;
+        s.released = false;
         if (s.seq > m_bestSeq) {
             m_bestSeq = s.seq;
             m_bestSlot = int(frame.slot);
             QMetaObject::invokeMethod(this, "update", Qt::QueuedConnection);
         }
     }
+    if (lost)
+        handleConnectionLost();
+}
+
+void FrameSink::handleConnectionLost()
+{
+    qWarning("framesink: engine connection lost");
+    dropConnection();
+    m_mode = Mode::Undecided;
+    m_detachPending = true;
+    stopRepaint();
+    scheduleRetry();
+    update();
 }
 
 void FrameSink::dropConnection()
@@ -275,7 +338,9 @@ bool FrameSink::openSink()
         || probe.width == 0 || probe.height == 0
         || fstat(m_fd, &st) != 0
         || size_t(st.st_size) < sizeof(FrameOutHeader) + size_t(probe.width) * probe.height * 3
-        || time(nullptr) - st.st_mtime > 5) {
+        || time(nullptr) - st.st_mtime > 5
+        || st.st_mtim.tv_sec < m_stalledSec
+        || (st.st_mtim.tv_sec == m_stalledSec && st.st_mtim.tv_nsec <= m_stalledNsec)) {
         close(m_fd);
         m_fd = -1;
         scheduleRetry();
@@ -325,7 +390,7 @@ void FrameSink::dmabufDraw(QSGSimpleTextureNode *node)
     int slot = -1;
     for (int i = 0; i < int(m_slotCount); ++i) {
         DmaSlot &s = m_slots[i];
-        if (s.seq == 0)
+        if (s.seq == 0 || s.seq <= m_drawnSequence)
             continue;
         if (s.fenceFd >= 0) {
             pollfd p {s.fenceFd, POLLIN, 0};
@@ -335,18 +400,15 @@ void FrameSink::dmabufDraw(QSGSimpleTextureNode *node)
         if (slot < 0 || s.seq > m_slots[size_t(slot)].seq)
             slot = i;
     }
-    if (slot < 0)
+    if (slot < 0) {
+        if (m_drawnSequence == 0)
+            drawHint(node);
         return;
+    }
     DmaSlot &s = m_slots[size_t(slot)];
     if (s.fenceFd >= 0) {
         close(s.fenceFd);
         s.fenceFd = -1;
-    }
-    if (s.texture && m_drawnSequence == s.seq) {
-        node->setTexture (s.texture);
-        node->setRect (QRectF (0, 0, width (), height ()));
-        node->setFiltering (QSGTexture::Linear);
-        return;
     }
     void *nativeDisplay = nullptr;
     if (auto *ri = window()->rendererInterface()) {
@@ -409,14 +471,17 @@ void FrameSink::dmabufDraw(QSGSimpleTextureNode *node)
     node->setRect (QRectF (0, 0, width (), height ()));
     node->setFiltering (QSGTexture::Linear);
     m_drawnSequence = s.seq;
+    m_lastDrawnSlot = slot;
 }
 
 void FrameSink::shmDraw(QSGSimpleTextureNode *node)
 {
     if (m_map) {
         const uint64_t seq = __atomic_load_n(&m_header->sequence, __ATOMIC_ACQUIRE);
+        const auto now = std::chrono::steady_clock::now();
         if (seq != 0 && seq != m_drawnSequence
             && seq == __atomic_load_n(&m_header->sequence, __ATOMIC_ACQUIRE)) {
+            m_lastProgress = now;
             QImage image(m_header->width, m_header->height, QImage::Format_RGB888);
             const uint8_t *src = m_map + sizeof(FrameOutHeader);
             const bool flip = m_header->vflip != 0;
@@ -433,6 +498,20 @@ void FrameSink::shmDraw(QSGSimpleTextureNode *node)
         } else if (node->texture()) {
             node->setRect(QRectF(0, 0, width(), height()));
         }
+        if (m_drawnSequence != 0
+            && std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastProgress).count() > 2000) {
+            qWarning("framesink: shm source stalled, detaching");
+            struct stat st {};
+            if (m_fd >= 0 && fstat(m_fd, &st) == 0) {
+                m_stalledSec = st.st_mtim.tv_sec;
+                m_stalledNsec = st.st_mtim.tv_nsec;
+            }
+            closeSink();
+            m_mode = Mode::Undecided;
+            m_drawnSequence = 0;
+            stopRepaint();
+            QMetaObject::invokeMethod(this, [this] { scheduleRetry(); }, Qt::QueuedConnection);
+        }
     }
 }
 
@@ -442,10 +521,174 @@ QSGNode *FrameSink::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
     if (!node)
         node = new QSGSimpleTextureNode;
 
+    void *nativeDisplay = nullptr;
+    if (auto *ri = window()->rendererInterface()) {
+        if (auto *glctx = static_cast<QOpenGLContext *> (ri->getResource (window (), QSGRendererInterface::OpenGLContextResource))) {
+            if (auto *eglCtx = glctx->nativeInterface<QNativeInterface::QEGLContext>())
+                nativeDisplay = eglCtx->display ();
+        }
+    }
+    releaseRetiredSlots(nativeDisplay);
+    if (m_detachPending) {
+        for (auto &s : m_slots)
+            releaseSlotResources(s, nativeDisplay);
+        for (auto &s : m_slots)
+            s = DmaSlot {};
+        m_slotCount = 0;
+        m_bestSeq = 0;
+        m_bestSlot = -1;
+        m_drawnSequence = 0;
+        m_lastDrawnSlot = -1;
+        m_detachPending = false;
+    }
+
     if (m_mode == Mode::DmaBuf)
         dmabufDraw(node);
     else if (m_mode == Mode::Shm)
         shmDraw(node);
+    else
+        drawHint(node);
+
+    if (m_mode == Mode::DmaBuf && m_slotCount > 0) {
+        for (uint32_t i = 0; i < m_slotCount; ++i) {
+            DmaSlot &s = m_slots[i];
+            if (int(i) == m_lastDrawnSlot || s.released)
+                continue;
+            sendRelease(int(i), s.seq, takeRenderFence(nativeDisplay));
+            s.released = true;
+        }
+    }
 
     return node;
+}
+
+void FrameSink::drawHint(QSGSimpleTextureNode *node)
+{
+    if (width() <= 0 || height() <= 0)
+        return;
+    const QSize sz{int(width()), int(height())};
+    if (m_hintSize != sz) {
+        QImage image(sz, QImage::Format_RGB32);
+        image.fill(QColor(0x12, 0x12, 0x12));
+        QPainter p(&image);
+        QFont f = p.font();
+        f.setPixelSize(qBound(12, sz.height() / 24, 48));
+        p.setFont(f);
+        p.setPen(QColor(0x8a, 0x8a, 0x8a));
+        p.drawText(image.rect(), Qt::AlignCenter, QStringLiteral("wallpaper engine not running"));
+        p.end();
+        m_hintImage = image;
+        m_hintSize = sz;
+        if (m_hintTexture) {
+            m_hintTexture->deleteLater();
+            m_hintTexture = nullptr;
+        }
+    }
+    if (!m_hintTexture)
+        m_hintTexture = window()->createTextureFromImage(m_hintImage);
+    if (!m_hintTexture)
+        return;
+    node->setTexture(m_hintTexture);
+    node->setRect(QRectF(0, 0, width(), height()));
+    node->setFiltering(QSGTexture::Linear);
+}
+
+void FrameSink::releaseSlotResources(DmaSlot &s, void *eglDisplay)
+{
+    if (s.texture) {
+        s.texture->deleteLater();
+        s.texture = nullptr;
+    }
+    if (s.glTex) {
+        glDeleteTextures(1, &s.glTex);
+        s.glTex = 0;
+    }
+    if (s.eglImage && eglDisplay) {
+        auto destroyImage = reinterpret_cast<EGLBoolean (*) (EGLDisplay, EGLImageKHR)>
+            (eglGetProcAddress("eglDestroyImageKHR"));
+        if (destroyImage)
+            destroyImage(static_cast<EGLDisplay>(eglDisplay),
+                         static_cast<EGLImageKHR>(s.eglImage));
+        s.eglImage = nullptr;
+    }
+    if (s.dmabufFd >= 0) {
+        close(s.dmabufFd);
+        s.dmabufFd = -1;
+    }
+    if (s.fenceFd >= 0) {
+        close(s.fenceFd);
+        s.fenceFd = -1;
+    }
+    s.seq = 0;
+}
+
+void FrameSink::releaseRetiredSlots(void *eglDisplay)
+{
+    for (auto &s : m_retired)
+        releaseSlotResources(s, eglDisplay);
+    m_retired.clear();
+}
+
+void FrameSink::startRepaint()
+{
+    QMetaObject::invokeMethod(this, [this] {
+        if (!m_timer->isActive())
+            m_timer->start();
+    }, Qt::QueuedConnection);
+}
+
+void FrameSink::stopRepaint()
+{
+    QMetaObject::invokeMethod(this, [this] { m_timer->stop(); }, Qt::QueuedConnection);
+}
+
+int FrameSink::takeRenderFence(void *eglDisplay)
+{
+    if (!eglDisplay)
+        return -1;
+    auto createSync = reinterpret_cast<EGLSyncKHR (*) (EGLDisplay, EGLenum, const EGLint *)>
+        (eglGetProcAddress("eglCreateSyncKHR"));
+    auto destroySync = reinterpret_cast<EGLBoolean (*) (EGLDisplay, EGLSyncKHR)>
+        (eglGetProcAddress("eglDestroySyncKHR"));
+    auto dupFence = reinterpret_cast<int (*) (EGLDisplay, EGLSyncKHR)>
+        (eglGetProcAddress("eglDupNativeFenceFDANDROID"));
+    if (!createSync || !destroySync || !dupFence)
+        return -1;
+    EGLSyncKHR sync = createSync(static_cast<EGLDisplay>(eglDisplay), EGL_SYNC_NATIVE_FENCE_ANDROID, nullptr);
+    if (sync == EGL_NO_SYNC_KHR)
+        return -1;
+    glFlush();
+    const int fd = dupFence(static_cast<EGLDisplay>(eglDisplay), sync);
+    destroySync(static_cast<EGLDisplay>(eglDisplay), sync);
+    return fd;
+}
+
+void FrameSink::sendRelease(int slot, uint64_t sequence, int fenceFd)
+{
+    if (m_connFd < 0) {
+        if (fenceFd >= 0)
+            close(fenceFd);
+        return;
+    }
+    FrameChannelFrame frame {sequence, uint32_t(slot), 0};
+    iovec iov {};
+    iov.iov_base = &frame;
+    iov.iov_len = sizeof(frame);
+    alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int))] = {};
+    msghdr msg {};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    if (fenceFd >= 0) {
+        msg.msg_control = control;
+        msg.msg_controllen = CMSG_LEN(sizeof(int));
+        cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &fenceFd, sizeof(int));
+    }
+    if (sendmsg(m_connFd, &msg, MSG_NOSIGNAL) != ssize_t(sizeof(frame)))
+        qWarning("framesink: release send failed errno=%d", errno);
+    if (fenceFd >= 0)
+        close(fenceFd);
 }

@@ -2,6 +2,7 @@
 #include "WallpaperEngine/Logging/Log.h"
 
 #include <cerrno>
+#include <poll.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -70,6 +71,15 @@ bool FrameChannelClient::connectAndHello () {
         return false;
     }
     sLog.out ("[channel] hello sent path=", m_path);
+    m_peerGone = false;
+    m_helloed = true;
+    return true;
+}
+
+bool FrameChannelClient::justHelloed () {
+    if (!m_helloed)
+        return false;
+    m_helloed = false;
     return true;
 }
 
@@ -106,5 +116,53 @@ void FrameChannelClient::reset () {
         close (m_fd);
         m_fd = -1;
     }
+}
+
+bool FrameChannelClient::waitReadable (int timeoutMs) {
+    if (m_fd < 0 || m_peerGone)
+        return false;
+    pollfd p {m_fd, POLLIN, 0};
+    return poll (&p, 1, timeoutMs) > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR)) != 0;
+}
+
+bool FrameChannelClient::recvRelease (uint32_t &slot, uint64_t &sequence, int &fenceFd) {
+    if (m_fd < 0 || m_peerGone)
+        return false;
+    FrameChannelFrame frame {};
+    iovec iov {};
+    iov.iov_base = &frame;
+    iov.iov_len = sizeof (frame);
+    alignas (cmsghdr) char control[CMSG_SPACE (sizeof (int))] = {};
+    msghdr msg {};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof (control);
+    ssize_t n = recvmsg (m_fd, &msg, MSG_DONTWAIT);
+    if (n == 0) {
+        m_peerGone = true;
+        reset ();
+        return false;
+    }
+    if (n < 0) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            m_peerGone = true;
+            reset ();
+        }
+        return false;
+    }
+    if (n < ssize_t (sizeof (frame))) {
+        m_peerGone = true;
+        reset ();
+        return false;
+    }
+    fenceFd = -1;
+    for (cmsghdr *c = CMSG_FIRSTHDR (&msg); c; c = CMSG_NXTHDR (&msg, c)) {
+        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS && c->cmsg_len >= CMSG_LEN (sizeof (int)))
+            memcpy (&fenceFd, CMSG_DATA (c), sizeof (int));
+    }
+    slot = frame.slot;
+    sequence = frame.sequence;
+    return true;
 }
 }

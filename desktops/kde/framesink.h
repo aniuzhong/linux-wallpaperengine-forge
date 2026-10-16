@@ -3,13 +3,17 @@
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QSGSimpleTextureNode>
 
+#include <QImage>
 #include <QObject>
+#include <QSize>
 #include <QTimer>
 #include <QSocketNotifier>
 #include <sys/socket.h>
 
+#include <chrono>
 #include <cstdint>
 #include <fcntl.h>
+#include <vector>
 
 struct FrameOutHeader {
     uint32_t magic;
@@ -63,6 +67,16 @@ protected:
 private:
     enum class Mode { Undecided, DmaBuf, Shm };
 
+    struct DmaSlot {
+        int dmabufFd = -1;
+        void *eglImage = nullptr;
+        GLuint glTex = 0;
+        QSGTexture *texture = nullptr;
+        int fenceFd = -1;
+        uint64_t seq = 0;
+        bool released = false;
+    };
+
     void tryAttach();
     void startSocketServer();
     void stopSocketServer();
@@ -71,11 +85,19 @@ private:
     bool readHello(msghdr &msg, ssize_t n);
     void readFrameEvent(ssize_t n);
     void dropConnection();
+    void handleConnectionLost();
     bool openSink();
     void closeSink();
     void scheduleRetry();
+    void startRepaint();
+    void stopRepaint();
     void dmabufDraw(QSGSimpleTextureNode *node);
     void shmDraw(QSGSimpleTextureNode *node);
+    void drawHint(QSGSimpleTextureNode *node);
+    void releaseSlotResources(DmaSlot &slot, void *eglDisplay);
+    void releaseRetiredSlots(void *eglDisplay);
+    int takeRenderFence(void *eglDisplay);
+    void sendRelease(int slot, uint64_t sequence, int fenceFd);
 
     QString m_source;
     QTimer *m_timer = nullptr;
@@ -88,15 +110,8 @@ private:
     QSocketNotifier *m_connNotifier = nullptr;
     bool m_helloDone = false;
 
-    struct DmaSlot {
-        int dmabufFd = -1;
-        void *eglImage = nullptr;
-        GLuint glTex = 0;
-        QSGTexture *texture = nullptr;
-        int fenceFd = -1;
-        uint64_t seq = 0;
-    };
     DmaSlot m_slots[8];
+    std::vector<DmaSlot> m_retired;
     uint32_t m_slotCount = 0;
     uint32_t m_dmaWidth = 0;
     uint32_t m_dmaHeight = 0;
@@ -112,4 +127,13 @@ private:
     uint32_t m_width = 0;
     uint32_t m_height = 0;
     uint64_t m_drawnSequence = 0;
+
+    QSGTexture *m_hintTexture = nullptr;
+    QImage m_hintImage;
+    QSize m_hintSize;
+    bool m_detachPending = false;
+    std::chrono::steady_clock::time_point m_lastProgress;
+    qint64 m_stalledSec = 0;
+    long m_stalledNsec = -1;
+    int m_lastDrawnSlot = -1;
 };

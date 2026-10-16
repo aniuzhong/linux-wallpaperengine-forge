@@ -55,6 +55,7 @@ private:
     FrameSource::Writer m_frameOutWriter;
     bool m_destinationRegistered = false;
     uint32_t m_frameCounter = 0;
+    double m_tickSumMs = 0.0;
     std::chrono::steady_clock::time_point m_startTime;
 };
 }

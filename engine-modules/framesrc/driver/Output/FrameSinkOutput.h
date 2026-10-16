@@ -40,6 +40,8 @@ public:
     void setupTransport (uint32_t width, uint32_t height);
     void releaseSlots ();
     bool probeDmaBufExport ();
+    int acquireSlot ();
+    void waitConsumerFence (int idx);
 
     Transport m_transport = Transport::Shm;
     std::string m_channelPath;
@@ -51,6 +53,11 @@ public:
     void *m_dupNativeFence = nullptr;
     void *m_eglDisplayHandle = nullptr;
     uint64_t m_frameSeq = 0;
+    bool m_inFlight[kSlotCount] = {};
+    int m_consumerFence[kSlotCount] = {-1, -1, -1};
+    bool m_releaseSeen = false;
+    bool m_legacyConsumer = false;
+    int m_forceStreak = 0;
     FrameSource::FrameChannelClient m_channel;
 
     FrameSource::Writer& m_writer;
@@ -58,6 +65,10 @@ public:
     GLuint m_colorTexture = 0;
     GLuint m_depthRenderbuffer = 0;
     uint64_t m_publishedFrames = 0;
+    int m_captureSamples = 0;
+    double m_captureSumMs = 0.0;
+    double m_captureMaxMs = 0.0;
+    bool m_fenceWarned = false;
     uint64_t m_captureIndex = 0;
     bool m_asyncReadback = false;
     static constexpr int kPixelBufferCount = 2;

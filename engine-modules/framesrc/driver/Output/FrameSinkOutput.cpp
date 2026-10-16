@@ -14,6 +14,9 @@
 #ifndef EGL_SYNC_NATIVE_FENCE_ANDROID
 #define EGL_SYNC_NATIVE_FENCE_ANDROID 0x3144
 #endif
+#ifndef EGL_SYNC_NATIVE_FENCE_FD_ANDROID
+#define EGL_SYNC_NATIVE_FENCE_FD_ANDROID 0x3145
+#endif
 #ifndef EGL_NO_SYNC_KHR
 #define EGL_NO_SYNC_KHR ((EGLSyncKHR) 0)
 #endif
@@ -33,7 +36,7 @@ public:
 	}
 	glBindFramebuffer (GL_FRAMEBUFFER, m_output->framebuffer ());
 	glViewport (0, 0, viewport.z, viewport.w);
-	sLog.out ("framesink viewport makeCurrent");
+	// sLog.out ("framesink viewport makeCurrent");
     }
 
     void swapOutput () override {
@@ -42,6 +45,25 @@ public:
 
 private:
     FrameSinkOutput* m_output;
+};
+
+struct CaptureTiming {
+    FrameSinkOutput* out;
+    std::chrono::steady_clock::time_point start;
+    ~CaptureTiming () {
+	const double ms = std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now () - start).count ();
+	out->m_captureSamples++;
+	out->m_captureSumMs += ms;
+	if (ms > out->m_captureMaxMs)
+	    out->m_captureMaxMs = ms;
+	if (out->m_captureSamples >= 300) {
+	    sLog.out ("framesink capture: avg=", out->m_captureSumMs / out->m_captureSamples, "ms max=", out->m_captureMaxMs,
+		"ms over ", out->m_captureSamples, " frames (transport=", out->m_transport == FrameSinkOutput::Transport::DmaBuf ? "dmabuf" : "shm", ")");
+	    out->m_captureSamples = 0;
+	    out->m_captureSumMs = 0.0;
+	    out->m_captureMaxMs = 0.0;
+	}
+    }
 };
 }
 
@@ -151,6 +173,9 @@ void FrameSinkOutput::setupTransport (uint32_t width, uint32_t height) {
         hello.stride = uint32_t (stride);
         hello.modifier = modifier;
         hello.slotCount = kSlotCount;
+        const char* eglExts = eglQueryString (reinterpret_cast<EGLDisplay> (m_eglDisplayHandle), EGL_EXTENSIONS);
+        sLog.out ("framesink fence: EGL_ANDROID_native_fence_sync ",
+            (m_dupNativeFence && eglExts && strstr (eglExts, "EGL_ANDROID_native_fence_sync")) ? "supported" : "missing");
         m_channel.start (m_channelPath, hello, std::vector<int> (m_dmabufFds, m_dmabufFds + kSlotCount));
         m_transport = Transport::DmaBuf;
         char fcc[5] = {char (fourcc & 0xff), char ((fourcc >> 8) & 0xff), char ((fourcc >> 16) & 0xff),
@@ -168,6 +193,11 @@ void FrameSinkOutput::setupTransport (uint32_t width, uint32_t height) {
 void FrameSinkOutput::releaseSlots () {
     auto destroyImage = (EGLBoolean (*) (EGLDisplay, EGLImageKHR)) eglGetProcAddress ("eglDestroyImageKHR");
     for (int i = 0; i < kSlotCount; ++i) {
+        if (m_consumerFence[i] >= 0) {
+            close (m_consumerFence[i]);
+            m_consumerFence[i] = -1;
+        }
+        m_inFlight[i] = false;
         if (m_dmabufFds[i] >= 0) {
             close (m_dmabufFds[i]);
             m_dmabufFds[i] = -1;
@@ -251,9 +281,112 @@ void FrameSinkOutput::setupPixelBuffers (uint32_t width, uint32_t height) {
     sLog.out ("framesink readback mode: ", m_asyncReadback ? "async pbo" : "sync (set LWE_ASYNC_READBACK=1 to enable pbo)");
 }
 
+int FrameSinkOutput::acquireSlot () {
+    if (m_channel.justHelloed ()) {
+        for (int i = 0; i < kSlotCount; ++i)
+            m_inFlight[i] = false;
+    }
+    const int want = int (m_frameSeq % kSlotCount);
+    const auto freeSlot = [this, want] () -> int {
+        int freeCount = 0;
+        for (int i = 0; i < kSlotCount; ++i)
+            if (!m_inFlight[i])
+                ++freeCount;
+        if (freeCount < 2)
+            return -1;
+        for (int i = 0; i < kSlotCount; ++i) {
+            const int idx = (want + i) % kSlotCount;
+            if (!m_inFlight[idx])
+                return idx;
+        }
+        return -1;
+    };
+    int idx = freeSlot ();
+    if (idx >= 0 || m_legacyConsumer || m_channel.peerGone ())
+        return idx >= 0 ? idx : want;
+    const auto waitStart = std::chrono::steady_clock::now ();
+    const auto deadline = waitStart + std::chrono::milliseconds (200);
+    while (idx < 0) {
+        if (m_channel.waitReadable (50)) {
+            uint32_t slot = 0;
+            uint64_t seq = 0;
+            int fenceFd = -1;
+            while (m_channel.recvRelease (slot, seq, fenceFd)) {
+                m_releaseSeen = true;
+                if (slot < uint32_t (kSlotCount)) {
+                    if (m_consumerFence[slot] >= 0)
+                        close (m_consumerFence[slot]);
+                    m_consumerFence[slot] = fenceFd;
+                    m_inFlight[slot] = false;
+                } else if (fenceFd >= 0) {
+                    close (fenceFd);
+                }
+            }
+            idx = freeSlot ();
+        }
+        if (std::chrono::steady_clock::now () >= deadline)
+            break;
+    }
+    if (idx < 0) {
+        if (!m_releaseSeen) {
+            m_legacyConsumer = true;
+            sLog.out ("framesink: consumer does not ack releases, slot gating disabled");
+        } else if (++m_forceStreak % 300 == 1) {
+            sLog.error ("framesink: slot wait timeout, forcing slot (consumer stalled?)");
+        }
+        return want;
+    }
+    m_forceStreak = 0;
+    const auto waitedMs = std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now () - waitStart).count ();
+    if (waitedMs > 40.0) {
+        static int waitLogs = 0;
+        if (++waitLogs % 100 == 1)
+            sLog.out ("[gating] slot wait ", waitedMs, "ms (release cadence)");
+    }
+    return idx;
+}
+
+void FrameSinkOutput::waitConsumerFence (int idx) {
+    const int fd = m_consumerFence[idx];
+    if (fd < 0)
+        return;
+    m_consumerFence[idx] = -1;
+    const auto fenceStart = std::chrono::steady_clock::now ();
+    EGLDisplay display = reinterpret_cast<EGLDisplay> (m_eglDisplayHandle);
+    auto createSync = reinterpret_cast<EGLSyncKHR (*) (EGLDisplay, EGLenum, const EGLint *)>
+        (eglGetProcAddress ("eglCreateSyncKHR"));
+    auto destroySync = reinterpret_cast<EGLBoolean (*) (EGLDisplay, EGLSyncKHR)>
+        (eglGetProcAddress ("eglDestroySyncKHR"));
+    auto waitSync = reinterpret_cast<EGLBoolean (*) (EGLDisplay, EGLSyncKHR, EGLint)>
+        (eglGetProcAddress ("eglWaitSyncKHR"));
+    auto clientWaitSync = reinterpret_cast<EGLint (*) (EGLDisplay, EGLSyncKHR, EGLint, GLuint64)>
+        (eglGetProcAddress ("eglClientWaitSyncKHR"));
+    if (!createSync || !destroySync) {
+        close (fd);
+        return;
+    }
+    const EGLint attrs[] = {EGL_SYNC_NATIVE_FENCE_FD_ANDROID, fd, EGL_NONE};
+    EGLSyncKHR sync = createSync (display, EGL_SYNC_NATIVE_FENCE_ANDROID, attrs);
+    if (sync == EGL_NO_SYNC_KHR) {
+        close (fd);
+        return;
+    }
+    if (waitSync && waitSync (display, sync, 0) != EGL_TRUE && clientWaitSync)
+        clientWaitSync (display, sync, 0, GLuint64 (100000000));
+    destroySync (display, sync);
+    const auto fenceMs = std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now () - fenceStart).count ();
+    if (fenceMs > 40.0) {
+        static int fenceLogs = 0;
+        if (++fenceLogs % 100 == 1)
+            sLog.out ("[gating] fence wait ", fenceMs, "ms (consumer gpu backlog)");
+    }
+}
+
 void FrameSinkOutput::captureFrame (uint32_t width, uint32_t height) {
+    CaptureTiming timing {this, std::chrono::steady_clock::now ()};
     if (m_transport == Transport::DmaBuf) {
-        const int idx = int (m_frameSeq % kSlotCount);
+        const int idx = acquireSlot ();
+        waitConsumerFence (idx);
         glBindFramebuffer (GL_READ_FRAMEBUFFER, m_framebuffer);
         glReadBuffer (GL_COLOR_ATTACHMENT0);
         glPixelStorei (GL_UNPACK_ALIGNMENT, 1);
@@ -289,9 +422,16 @@ void FrameSinkOutput::captureFrame (uint32_t width, uint32_t height) {
                 }
             }
         }
-        glFlush ();
+        if (fenceFd < 0) {
+            if (!m_fenceWarned) {
+                m_fenceWarned = true;
+                sLog.error ("framesink fence: inactive, consumer samples slots without gpu sync");
+            }
+            glFlush ();
+        }
         if (++m_frameSeq % 60 == 0)
             sLog.out ("[transport] dmabuf frame sent seq=", m_frameSeq);
+        m_inFlight[idx] = true;
         m_channel.sendFrame (m_frameSeq, idx, fenceFd);
         return;
     }

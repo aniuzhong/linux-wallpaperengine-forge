@@ -238,15 +238,18 @@ void HeadlessOpenGLDriver::dispatchEventQueue () {
 
     this->m_frameCounter++;
 
+    endTime = this->getRenderTime ();
+    this->m_tickSumMs += (endTime - startTime) * 1000.0;
+
     if (this->m_frameCounter % 60 == 0) {
 	const auto epoch = std::chrono::duration_cast<std::chrono::seconds> (
 	    std::chrono::system_clock::now ().time_since_epoch ()
 	).count ();
 	sLog.out ("[heartbeat] driver frame=", this->m_frameCounter,
-		  " renderTime=", this->getRenderTime (), " epoch=", epoch);
+		  " renderTime=", this->getRenderTime (), " epoch=", epoch,
+		  " tickAvg=", this->m_tickSumMs / 60.0, "ms");
+	this->m_tickSumMs = 0.0;
     }
-
-    endTime = this->getRenderTime ();
 
     if ((endTime - startTime) < minimumTime) {
 	usleep ((minimumTime - (endTime - startTime)) * CLOCKS_PER_SEC);
