@@ -109,16 +109,33 @@ if [ -n "$(ls -A "$CEF_CACHE" 2>/dev/null)" ]; then
 fi
 
 	if command -v ccache >/dev/null 2>&1; then
-		FRAMESRC_CCACHE_ARGS="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
-		log "Compiler cache: ccache enabled"
+		FRAMESRC_CCACHE_ARGS="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache"
+		log "Compiler cache: ccache enabled (C and C++)"
 	fi
-log "Configuring CMake ..."
-cmake -S "$ENGINE_SRC" -B "$BUILD_DIR" \
-	-DCMAKE_BUILD_TYPE=Release \
-	-DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
-	-DCMAKE_INSTALL_PREFIX="$PAYLOAD" \
-	-DBUILD_TESTING=OFF \
-	${FORGE_CMAKE_ARGS:-} ${FRAMESRC_CCACHE_ARGS:-}
+# An already-configured tree reconfigures itself on demand (make tracks
+# CMakeLists.txt and cmake/ includes), so the unconditional configure here only
+# paid ~20s per incremental run. Force with FORGE_RECONFIGURE=1 (needed e.g.
+# after changing FORGE_CMAKE_ARGS).
+need_configure=0
+if [ ! -f "$BUILD_DIR/CMakeCache.txt" ] || [ "${FORGE_RECONFIGURE:-0}" = "1" ]; then
+	need_configure=1
+elif [ -n "${FRAMESRC_CCACHE_ARGS:-}" ] && ! grep -q '^CMAKE_CXX_COMPILER_LAUNCHER' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
+	need_configure=1
+	log "ccache appeared after last configure; reconfiguring to wire it in"
+fi
+if [ "$need_configure" = 1 ]; then
+	log "Configuring CMake ..."
+	cmake -S "$ENGINE_SRC" -B "$BUILD_DIR" \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
+		-DCMAKE_INSTALL_PREFIX="$PAYLOAD" \
+		-DBUILD_TESTING=OFF \
+		${FORGE_CMAKE_ARGS:-} ${FRAMESRC_CCACHE_ARGS:-}
+else
+	log "Configuring CMake ... skipped (cache present; FORGE_RECONFIGURE=1 to force)"
+fi
+
+find "$BUILD_DIR" -name '*.o' -size 0 -delete 2>/dev/null || true
 log "Building ($(nproc) jobs) ..."
 cmake --build "$BUILD_DIR" -j"$(nproc)"
 log "Installing into $PAYLOAD ..."

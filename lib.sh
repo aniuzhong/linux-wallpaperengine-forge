@@ -24,7 +24,7 @@ forge_arch() {
 
 forge_fingerprint() {
 	local kv id ver
-	kv="$(. /etc/os-release 2>/dev/null && printf '%s %s' "${ID:-}" "${VERSION_ID:-}")" || return 0
+	kv="$(. /etc/os-release 2>/dev/null && printf '%s %s' "${ID:-}" "${VERSION_ID:-${BUILD_ID:-}}")" || return 0
 	id=${kv%% *}
 	ver=${kv#* }
 	[ -n "$id" ] && [ -n "$ver" ] && [ "$id" != "$kv" ] || return 0
@@ -123,26 +123,40 @@ ensure_repo() {
 	log "Source ready: $(basename "$dir") @ ${ref:0:9}"
 }
 
+# Content scan used for patch-state detection. Prunes everything the
+# reset/reapply flow cannot touch (build outputs, dependency trees): hashing
+# build/ — including the 1.4GB CEF dist — twice per run was the bulk of the
+# old per-run overhead.
+tree_md5_scan () {
+	( cd "$1" && find . -name .git -prune -o -path ./build -prune -o -path ./node_modules -prune \
+		-o -path ./dist -prune -o -path ./.forge-patch-state -prune -o -type f -print0 2>/dev/null \
+		| sort -z | xargs -0 -r md5sum 2>/dev/null ) || true
+}
+
 # Restores mtimes of files whose content is identical to a pre-build snapshot,
 # so git checkout + patch re-application does not trigger mass recompilation.
+# The before/after join runs in a single awk pass; only the touch calls are
+# per-file.
 preserve_mtimes_for_unchanged () {
-	local repo=$1 hash_before=$2 mt_before=$3
-	local hash_after
-	hash_after=$(cd "$repo" && find . -name .git -prune -o -type f -print0 | sort -z | xargs -0 md5sum 2>/dev/null)
-	local line sum file old_ts old_entry restored=0
-	while IFS= read -r line; do
-		[ -n "$line" ] || continue
-		sum="${line%% *}"
-		file="${line#* }"
-		old_entry=$(grep -F " $file" "$hash_before" | head -n 1 || true)
-		[ -n "$old_entry" ] || continue
-		[ "${old_entry%% *}" = "$sum" ] || continue
-		old_ts=$(grep -F " $file" "$mt_before" | head -n 1 | awk '{print $1}' || true)
-		if [ -n "$old_ts" ]; then
-			touch -d "@$old_ts" "$repo/$file"
-			restored=$((restored + 1))
-		fi
-	done < "$hash_after"
+	local repo=$1 hash_before=$2 mt_before=$3 hash_after=$4
+	local ts file restored=0
+	while IFS=$'\t' read -r ts file; do
+		[ -n "$file" ] || continue
+		touch -d "@$ts" "$repo/$file" && restored=$((restored + 1))
+	done < <(awk -v fb="$hash_before" -v fm="$mt_before" '
+		FILENAME == fb {
+			p = index($0, " "); path = substr($0, p + 1); sub(/^ +/, "", path)
+			before[path] = substr($0, 1, p - 1); next
+		}
+		FILENAME == fm {
+			p = index($0, " "); mt[substr($0, p + 1)] = substr($0, 1, p - 1); next
+		}
+		{
+			p = index($0, " "); path = substr($0, p + 1); sub(/^ +/, "", path)
+			if (before[path] == substr($0, 1, p - 1) && (path in mt))
+				printf "%s\t%s\n", mt[path], path
+		}
+	' "$hash_before" "$mt_before" "$hash_after")
 	log "Preserved mtimes for $restored unchanged files"
 }
 
@@ -150,12 +164,6 @@ apply_patch_list() {
 	local repo_src=$1 list=$2 pool=$3
 	local dir patch id
 
-	local hash_before mt_before
-	hash_before=$( (cd "$repo_src" && find . -name .git -prune -o -type f -print0 2>/dev/null | sort -z | xargs -0 -r md5sum 2>/dev/null) || true )
-	mt_before=$(mktemp)
-	(cd "$repo_src" && find . -name .git -prune -o -type f -printf '%T@ %p\n' | sort -k2) > "$mt_before"
-
-	git -C "$repo_src" checkout -- . 2>/dev/null || true
 	local -a all_patches=()
 	while IFS= read -r id; do
 		[ -n "$id" ] || continue
@@ -165,6 +173,32 @@ apply_patch_list() {
 		log "Patch list is empty: $list"
 		return 0
 	fi
+
+	# Fast path: identical patch set and byte-identical tree to the last
+	# successful apply means the tree is already in the patched state — skip
+	# the reset/reapply/restore cycle entirely. State lives untracked in the
+	# repo, so manual edits, upstream ref changes or edited patches all miss
+	# it and fall through to the slow path.
+	local state_dir="$repo_src/.forge-patch-state"
+	local state_patches="$state_dir/patches.md5" state_tree="$state_dir/tree.md5"
+	local patch_fp
+	patch_fp=$(cat "${all_patches[@]}" "$list" 2>/dev/null | md5sum 2>/dev/null | awk '{print $1}' || true)
+	if [ -n "$patch_fp" ] && [ "$(cat "$state_patches" 2>/dev/null || true)" = "$patch_fp" ] && [ -f "$state_tree" ]; then
+		if tree_md5_scan "$repo_src" | cmp -s - "$state_tree"; then
+			log "Patch state intact, skipping reset/reapply"
+			return 0
+		fi
+	fi
+
+	local hash_before mt_before hash_after
+	hash_before=$(mktemp)
+	hash_after=$(mktemp)
+	mt_before=$(mktemp)
+	tree_md5_scan "$repo_src" > "$hash_before"
+	( cd "$repo_src" && find . -name .git -prune -o -path ./build -prune -o -path ./node_modules -prune \
+		-o -path ./dist -prune -o -path ./.forge-patch-state -prune -o -type f -printf '%T@ %p\n' 2>/dev/null | sort -k2 ) > "$mt_before"
+
+	git -C "$repo_src" checkout -- . 2>/dev/null || true
 	local newfiles=""
 	newfiles=$(awk '/^--- \/dev\/null$/{nl=1; next} nl==1 && /^\+\+\+ b\//{sub(/^\+\+\+ b\//, ""); print; nl=0; next} {nl=0}' "${all_patches[@]}" | sort -u)
 	for f in $newfiles; do
@@ -179,8 +213,13 @@ apply_patch_list() {
 		fi
 	done
 
-	preserve_mtimes_for_unchanged "$repo_src" "$hash_before" "$mt_before" || true
-	rm -f "$mt_before"
+	tree_md5_scan "$repo_src" > "$hash_after"
+	preserve_mtimes_for_unchanged "$repo_src" "$hash_before" "$mt_before" "$hash_after"
+
+	mkdir -p "$state_dir"
+	printf '%s\n' "$patch_fp" > "$state_patches"
+	cp "$hash_after" "$state_tree"
+	rm -f "$mt_before" "$hash_before" "$hash_after"
 }
 
 PROBE_MISSING=()
